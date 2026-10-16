@@ -217,6 +217,7 @@ def clear_cache() -> None:
     """Oublie l'inventaire (après installation d'une police ou changement de FONT_DIRS)."""
     _families_for.cache_clear()
     _pymupdf_font.cache_clear()
+    natural_line_height.cache_clear()
 
 
 def _lookup(families: dict[str, FontFamily], family: str) -> str | None:
