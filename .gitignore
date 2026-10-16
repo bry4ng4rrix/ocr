@@ -12,3 +12,6 @@ workspace/
 .vscode/
 .idea/
 .DS_Store
+
+# Données de travail (projets, photos importées, exports) : jamais versionnées
+data/

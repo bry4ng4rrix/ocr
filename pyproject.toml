@@ -1,0 +1,19 @@
+[project]
+name = "book-ocr"
+version = "0.1.0"
+description = "Reconstruction de livres imprimés en DOCX et PDF à partir de photographies"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "slow: test long (OCR réel, pages complètes)",
+    "tesseract: nécessite le binaire tesseract",
+    "libreoffice: nécessite soffice (LibreOffice headless)",
+    "real_images: utilise les photos réelles hors dépôt (BOOKOCR_REAL_PAGES)",
+    "ui: test de l'interface Streamlit (AppTest)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:docx.*",
+]

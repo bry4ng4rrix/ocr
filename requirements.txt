@@ -1,0 +1,16 @@
+# Testé sous Python 3.14.8 (Linux, 16/10/2026). Bornes basses = fonctionnalités utilisées.
+streamlit>=1.51,<2              # st.components.v2 (éditeur de blocs) ; testé 1.66.0
+opencv-python-headless>=4.9,<6  # traitement d'image ; testé 5.0.0.93
+numpy>=1.26,<3                  # testé 2.5.4
+pillow>=10.0,<13                # lecture TIFF multi-pages, EXIF, rendu des pages de test ; testé 12.3.0
+pydantic>=2.6,<3                # modèles de données ; testé 2.14.1
+python-docx>=1.1,<2             # export DOCX ; testé 1.2.0
+pymupdf>=1.26,<2                # import PDF, rendu PDF, aperçu, validation (licence AGPL-3.0) ; testé 1.28.2
+
+# Tests
+pytest>=8                       # testé 9.1.1
+
+# Dépendances système (hors pip) :
+#   tesseract (5.x) + données de langue : fra, eng, deu, osd…
+#   libreoffice (facultatif) : conversion DOCX -> PDF et contrôle du rendu
+# ATTENTION : ne pas installer le paquet pip « docx » (obsolète, conflit avec python-docx).
