@@ -466,7 +466,7 @@ class ProcessingSettings(_Model):
     auto_crop: bool = True
     auto_deskew: bool = True
     detect_illustrations: bool = True
-    retry_binarized: bool = True        # a second, binarized reading when confidence is low
+    retry_binarized: bool = True        # retry with binarization when text is missing or confidence is low
     dehyphenate: bool = True            # join words cut at the end of a line ("exem-\nple")
     low_confidence: float = Field(60.0, ge=0.0, le=100.0)
 

@@ -217,12 +217,11 @@ def _binarize(gray: np.ndarray) -> np.ndarray:
 
 def read_page(gray: np.ndarray, languages: list[str], retry_binarized: bool = True,
               low_confidence: float = 60) -> OCRResult:
-    """Read a page; when the mean confidence is under `low_confidence`, also read a binarized copy
-    and keep it only if it reads more text with more confidence (`preparation` tells which)."""
+    """Read a page; retry with a binarized copy when no text or low-confidence text was found."""
     image = _as_gray(gray)
     first = run_ocr(image, languages)
     mean = first.mean_confidence
-    if not retry_binarized or not first.words or mean >= low_confidence:
+    if not retry_binarized or (first.words and mean >= low_confidence):
         return first
     second = run_ocr(_binarize(image), languages)
     if second.score > first.score:

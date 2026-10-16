@@ -23,7 +23,8 @@ def render(prj) -> None:
         return
     settings = _settings(prj, installed)
     st.subheader("Pages à traiter")
-    choice = st.radio("Pages", ["Pages non traitées ou à OCR obsolète", "Toutes les pages", "Sélection"],
+    choice = st.radio("Pages", ["Pages non traitées, sans texte OCR ou à OCR obsolète",
+                                "Toutes les pages", "Sélection"],
                       key="ocr_scope", horizontal=True)
     if choice == "Toutes les pages":
         ids = [p.id for p in prj.pages]
@@ -31,7 +32,8 @@ def render(prj) -> None:
         ids = st.multiselect("Pages choisies", [p.id for p in prj.pages], key=state.k("ocr_pages"),
                              format_func=lambda pid: state.page_label(prj, prj.page(pid)))
     else:
-        ids = [p.id for p in prj.pages if p.status != PageStatus.PROCESSED or p.ocr_outdated]
+        ids = [p.id for p in prj.pages if p.status != PageStatus.PROCESSED or p.ocr_outdated
+               or not p.text_blocks]
     redetect = st.checkbox("Refaire les détections automatiques (orientation, feuille, inclinaison)",
                            key="ocr_redetect", help="Sinon, les détections déjà faites sont réutilisées.")
     st.info("Relancer l'OCR conserve les blocs que vous avez corrigés, déplacés ou créés, ainsi que les "
@@ -64,7 +66,8 @@ def _settings(prj, installed: list[str]) -> ProcessingSettings:
         auto_crop = c[0].checkbox("Recadrage automatique de la feuille", value=s.auto_crop, key=state.k("ps_crop"))
         auto_deskew = c[0].checkbox("Redressement automatique", value=s.auto_deskew, key=state.k("ps_deskew"))
         detect = c[1].checkbox("Détecter les illustrations", value=s.detect_illustrations, key=state.k("ps_illus"))
-        retry = c[1].checkbox("Seconde lecture binarisée si la confiance est faible", value=s.retry_binarized,
+        retry = c[1].checkbox("Seconde lecture binarisée si aucun texte ou faible confiance",
+                              value=s.retry_binarized,
                               key=state.k("ps_retry"))
         dehyphen = c[1].checkbox("Recoller les mots coupés en fin de ligne", value=s.dehyphenate,
                                  key=state.k("ps_dehyphen"))
@@ -86,6 +89,7 @@ def _settings(prj, installed: list[str]) -> ProcessingSettings:
 
 
 def _run(prj, ids: list[str], redetect: bool) -> None:
+    st.session_state.pop("ocr_pdf_export", None)
     bar = st.progress(0.0, text="Préparation…")
     with state.guard("OCR"), st.status(f"OCR de {len(ids)} page(s)…", expanded=True) as status:
         last = {"page": -1}
@@ -100,9 +104,27 @@ def _run(prj, ids: list[str], redetect: bool) -> None:
         results = state.processing().process_pages(prj, ids, progress=progress, redetect=redetect)
         st.session_state["ocr_results"] = (prj.id, [r.__dict__ for r in results])
         failed = sum(1 for r in results if not r.ok)
-        status.update(label=f"OCR terminé : {len(results) - failed} page(s) traitée(s), {failed} en erreur",
-                      state="error" if failed else "complete")
         bar.progress(1.0, text="Terminé")
+        if any(result.ok for result in results):
+            exportable = [page for page in prj.pages
+                          if page.status == PageStatus.PROCESSED and not page.ocr_outdated]
+            if exportable:
+                from services import export_service
+
+                pdf_bar = st.progress(0.0, text="Création du PDF reconstruit…")
+
+                def pdf_progress(fraction: float, message: str) -> None:
+                    pdf_bar.progress(min(max(fraction, 0.0), 1.0), text=message)
+                    status.write(message)
+
+                result = export_service.export_pdf(
+                    prj, mode="reconstruction", page_ids=[page.id for page in exportable],
+                    progress=pdf_progress)
+                st.session_state["ocr_pdf_export"] = (prj.id, result.relative, result.warnings,
+                                                       result.not_reconstructed, result.validation)
+                status.write("Le PDF reconstruit est prêt à télécharger.")
+        status.update(label=f"Traitement terminé : {len(results) - failed} page(s) OCR, {failed} en erreur",
+                      state="error" if failed else "complete")
         state.bump()
 
 
@@ -119,3 +141,71 @@ def _results(prj) -> None:
                      "Illustrations": r["image_blocks"], "Durée (s)": round(r["seconds"], 1),
                      "Erreur": r["message"], "Avertissements": " ; ".join(r["warnings"])})
     st.dataframe(rows, hide_index=True)
+    exportable = [page for page in prj.pages if page.status == PageStatus.PROCESSED and not page.ocr_outdated]
+    if exportable:
+        st.subheader("PDF reconstruit")
+        st.caption(f"{len(exportable)} page(s) OCR à jour seront reconstruites à partir de leur texte "
+                   "et des illustrations extraites, sans réutiliser la photo complète.")
+        if st.button("Créer ou actualiser le PDF reconstruit", type="primary",
+                     key=state.k("ocr_export_pdf", prj.id)):
+            from services import export_service
+
+            with state.guard("Export PDF après traitement"), st.spinner("Génération et vérification du PDF…"):
+                result = export_service.export_pdf(
+                        prj, mode="reconstruction", page_ids=[page.id for page in exportable])
+                st.session_state["ocr_pdf_export"] = (prj.id, result.relative, result.warnings,
+                                                       result.not_reconstructed, result.validation)
+
+    exported = st.session_state.get("ocr_pdf_export")
+    if exported and exported[0] == prj.id:
+        _, relative, warnings, not_reconstructed, validation = exported
+        with state.guard("Téléchargement du PDF après traitement"):
+            data = state.storage().ProjectStorage(prj.id).read_bytes(relative)
+            st.download_button("Télécharger le PDF du livre", data,
+                               file_name=relative.rsplit("/", 1)[-1], mime="application/pdf",
+                               key=state.k("ocr_download_pdf", relative))
+        for warning in warnings:
+            st.warning(warning)
+        if not_reconstructed:
+            st.warning("Pages non reconstruites : " + ", ".join(str(number) for number in not_reconstructed))
+        validation_errors = validation.get("errors", [])
+        if validation_errors:
+            for error in validation_errors:
+                st.error(error)
+        elif validation:
+            st.success(f"PDF vérifié — {validation.get('page_count', 0)} page(s).")
+
+    successful = [result for result in stored[1] if result["ok"] and prj.page(result["page_id"])]
+    if not successful:
+        return
+
+    st.subheader("Comparaison original / résultat du livre")
+    page_ids = [result["page_id"] for result in successful]
+    page_id = st.selectbox(
+        "Page traitée",
+        page_ids,
+        format_func=lambda value: state.page_label(prj, prj.page(value)),
+        key=state.k("ocr_result_preview", prj.id),
+    )
+    page = prj.page(page_id)
+    original_column, result_column = st.columns(2)
+    from . import upload_page
+    from services import export_service
+
+    with original_column:
+        st.caption("Image ajoutée")
+        st.image(upload_page.original_preview(prj.id, page.original_path, page.source_index, 1000),
+                 caption=page.original_filename, width="stretch")
+    with result_column:
+        st.caption("Page reconstruite en PDF")
+        with state.guard("Aperçu du résultat OCR"):
+            image, report = export_service.preview_png(prj, page, mode="reconstruction", width_px=900)
+            st.image(image, caption="Texte OCR et illustrations extraites sur fond blanc",
+                     width="stretch")
+            if not page.text_blocks:
+                st.warning("Aucun texte OCR n’a été reconnu sur cette page. Relancez l’OCR pour obtenir "
+                           "une page reconstruite.")
+            for warning in report.warnings:
+                st.warning(warning)
+            for overflow in report.overflows:
+                st.error(overflow)

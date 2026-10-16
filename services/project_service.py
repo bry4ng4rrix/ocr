@@ -216,6 +216,72 @@ def add_text_block(page: Page, box: Box | None = None, text: str = "Nouveau text
     return block
 
 
+def restore_ocr_text(block: TextBlock) -> None:
+    block.text = block.ocr_text
+
+
+def merge_text_blocks(page: Page, block_id: str) -> TextBlock:
+    ordered = page.ordered_blocks()
+    index = next(i for i, block in enumerate(ordered) if block.id == block_id)
+    first = ordered[index]
+    if not isinstance(first, TextBlock) or index + 1 >= len(ordered) or not isinstance(ordered[index + 1], TextBlock):
+        raise ProjectError("La zone suivante dans l’ordre de lecture n’est pas un bloc texte.")
+    second = ordered[index + 1]
+    first_corrected = first.is_corrected
+    second_corrected = second.is_corrected
+    first.set_box(Box(x=min(first.x, second.x), y=min(first.y, second.y),
+                      width=max(first.x + first.width, second.x + second.width) - min(first.x, second.x),
+                      height=max(first.y + first.height, second.y + second.height) - min(first.y, second.y)))
+    first.ocr_text = f"{first.ocr_text.rstrip()}\n\n{second.ocr_text.lstrip()}".strip()
+    merged_text = f"{first.text.rstrip()}\n\n{second.text.lstrip()}".strip()
+    first.text = merged_text if first_corrected or second_corrected else first.ocr_text
+    first.lines = sorted(first.lines + second.lines, key=lambda line: (line.y, line.x))
+    first.confidence = min(first.confidence, second.confidence) if min(first.confidence, second.confidence) >= 0 \
+        else max(first.confidence, second.confidence)
+    first.manual = True
+    page.blocks.remove(second)
+    renumber(page)
+    return first
+
+
+def split_text_block(page: Page, block: TextBlock, line: int) -> TextBlock:
+    lines = block.text.split("\n")
+    if not 0 < line < len(lines):
+        raise ProjectError("Il faut au moins deux lignes de texte pour séparer la zone.")
+    if block.height <= 0.000002:
+        raise ProjectError("La zone est trop petite pour être séparée en deux.")
+
+    cut_y = block.y + block.height * line / len(lines)
+    if len(block.lines) == len(lines):
+        detected_cut = block.lines[line].y
+        if block.y < detected_cut < block.y + block.height:
+            cut_y = detected_cut
+    min_height = min(0.002, block.height / 2)
+    cut_y = min(max(cut_y, block.y + min_height), block.y + block.height - min_height)
+    first_lines, second_lines = lines[:line], lines[line:]
+    first_ocr_lines = block.ocr_text.split("\n")
+    second = TextBlock.model_validate({
+        **block.model_dump(),
+        "id": new_id("b_"),
+        "y": cut_y,
+        "height": block.y + block.height - cut_y,
+        "text": "\n".join(second_lines),
+        "ocr_text": "\n".join(first_ocr_lines[line:]) if first_ocr_lines else "",
+        "lines": block.lines[line:] if len(block.lines) == len(lines) else [],
+        "reading_order": block.reading_order + 1,
+        "manual": True,
+    })
+    block.height = cut_y - block.y
+    block.text = "\n".join(first_lines)
+    block.ocr_text = "\n".join(first_ocr_lines[:line]) if first_ocr_lines else ""
+    if len(block.lines) == len(lines):
+        block.lines = block.lines[:line]
+    block.manual = True
+    page.blocks.append(second)
+    renumber(page)
+    return second
+
+
 def add_image_block(project: Project, page: Page, data: bytes, filename: str, box: Box | None = None) -> ImageBlock:
     """Add an uploaded illustration (stored as lossless PNG)."""
     rgb = _decode_upload(data, filename)

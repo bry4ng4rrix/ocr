@@ -28,6 +28,8 @@ from .storage_service import ProjectStorage, save_project
 
 logger = logging.getLogger("livreocr.processing")
 Progress = Callable[[float, str], None]     # (fraction 0..1, message)
+PAGE_IMAGE_AREA = 0.75
+MIN_PAGE_TEXT_WORDS = 20
 
 
 # --------------------------------------------------------------------------- small in-process cache
@@ -151,6 +153,35 @@ def _text_boxes(page: Page) -> list[Box]:
 
 def _illustration_boxes(page: Page) -> list[Box]:
     return [b.source_box or b.box for b in page.image_blocks]
+
+
+def _ocr_mask_regions(regions: list[illustration_extraction.DetectedRegion]) -> list[Box]:
+    """Do not mask page-sized candidates before checking whether they contain readable text."""
+    return [region.box for region in regions
+            if not region.uncertain and region.kind != "table" and region.box.area < PAGE_IMAGE_AREA]
+
+
+def _filter_page_backgrounds(regions: list[illustration_extraction.DetectedRegion],
+                             good_words: list[tuple[int, int, int, int]],
+                             frame_shape: tuple[int, ...]) -> list[illustration_extraction.DetectedRegion]:
+    """Drop a page-sized image candidate when OCR confirms that it is actually the text page."""
+    if len(good_words) < MIN_PAGE_TEXT_WORDS:
+        return regions
+
+    height, width = frame_shape[:2]
+    filtered = []
+    for region in regions:
+        if region.kind == "table" or region.box.area < PAGE_IMAGE_AREA:
+            filtered.append(region)
+            continue
+        covered_words = sum(
+            overlap_ratio(Box.clamped(left / width, top / height,
+                                      (right - left) / width, (bottom - top) / height), region.box) > 0.5
+            for left, top, right, bottom in good_words
+        )
+        if covered_words < MIN_PAGE_TEXT_WORDS:
+            filtered.append(region)
+    return filtered
 
 
 def print_image(project: Project, page: Page, max_side: int | None = None) -> np.ndarray:
@@ -285,7 +316,7 @@ def process_page(project: Project, page: Page, progress: Progress | None = None,
         except Exception as exc:
             logger.exception("détection des illustrations (1re passe) en échec, page %s", page.id)
             page.warnings.append(f"Détection des illustrations impossible : {exc}")
-    sure = [r.box for r in regions if not r.uncertain and r.kind != "table"]
+    sure = _ocr_mask_regions(regions)
 
     step(0.25, "Préparation de l'image OCR")
     gray = ocr_image(project, page, frame, mode, sure if mode != ProcessingMode.TEXT else [])
@@ -309,10 +340,15 @@ def process_page(project: Project, page: Page, progress: Progress | None = None,
         except Exception as exc:
             logger.exception("détection des illustrations en échec, page %s", page.id)
             page.warnings.append(f"Détection des illustrations impossible : {exc}")
+        regions_before_filter = len(regions)
+        regions = _filter_page_backgrounds(regions, good_words, frame.shape)
 
     step(0.8, "Analyse de la mise en page")
     sheet = sheet_geometry(project.render, frame.shape[1], frame.shape[0])
     layout = layout_analysis.analyse_layout(ocr, frame, regions, sheet.content_height, settings)
+    if settings.detect_illustrations and len(regions) < regions_before_filter:
+        layout.warnings.append("Une détection couvrant presque toute la page a été ignorée : "
+                               "le texte OCR confirmé indique une page de texte, pas une illustration.")
 
     step(0.9, "Extraction des illustrations")
     kept = _kept_blocks(page)

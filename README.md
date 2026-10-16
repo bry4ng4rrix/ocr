@@ -64,11 +64,11 @@ Ouvrez ensuite l'adresse affichée (par défaut http://localhost:8501).
 ## Utilisation
 
 1. **Projet** (barre latérale) : créez un livre ou rouvrez-en un.
-2. **Pages** : importez plusieurs fichiers (JPG, PNG, TIFF multi-pages, PDF). Réordonnez, faites pivoter, supprimez ou ajoutez des pages. Les originaux ne sont jamais modifiés.
+2. **Pages** : importez plusieurs fichiers (JPG, PNG, TIFF multi-pages, PDF). Avant l’import, comparez l’image d’origine à l’aperçu préparé ; après OCR, comparez l’original à une nouvelle page A4 composée de texte OCR et d’illustrations extraites, jamais à une copie de la photo. Les originaux ne sont jamais modifiés.
 3. **Éditeur d'image** : géométrie (recadrage de la feuille, coins manuels, redressement, marges, échelle), mode (texte A, illustration B, mixte C), réglages **pour l'impression** et **pour l'OCR** (deux jeux distincts), corrections locales rectangulaires, réglages propres à chaque illustration (brouillon, puis « Valider pour le PDF »). Les aperçus avant et après sont recalculés depuis l'original.
-4. **Traitement OCR** : choisissez les langues installées et lancez l'OCR. Les blocs que vous avez corrigés ou créés sont conservés lors d'une relance.
+4. **Traitement OCR** : choisissez les langues installées et lancez l'OCR. À la fin, comparez l’image ajoutée à la page reconstruite sur fond blanc, puis téléchargez le PDF reconstruit des pages traitées à jour. Les blocs que vous avez corrigés ou créés sont conservés lors d'une relance.
 5. **Éditeur de blocs** : corrigez le texte (les mots de faible confiance sont signalés), les styles, la position et la taille (à la souris ou au clavier), l'ordre de lecture ; ajoutez ou supprimez des blocs. L'aperçu « reconstruit » est le PDF lui-même rasterisé.
-6. **Export PDF** : mode B (reconstruction modifiable) ou mode A (fac-similé). Le rapport relit le PDF : texte extractible, images, tailles de page, pages non reconstruites.
+6. **Export PDF** : choisissez le format de page et le mode reconstruction (texte OCR modifiable et illustrations extraites, avec la disposition détectée) ou fac-similé. Le rapport relit le PDF : texte extractible, images, tailles de page, pages non reconstruites.
 
 ### Sauvegarde et restauration
 

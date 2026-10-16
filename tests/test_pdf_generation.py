@@ -143,6 +143,16 @@ def test_text_is_extractable_unicode_and_fonts_are_embedded():
     assert report.pages[0].reconstructed and report.pages[0].status == "reconstruit"
 
 
+def test_reconstruction_does_not_export_a_page_sized_drawing_when_ocr_found_no_text():
+    page = make_page([image_block(x=0, y=0, w=1, h=1, detection="drawing")])
+    data, report = build(make_project([page]))
+
+    assert page_text(data).strip() == ""
+    assert not images_of(data)
+    assert not report.pages[0].reconstructed
+    assert any("Relancez l'OCR" in warning for warning in report.warnings)
+
+
 def test_metadata_title_author_creator():
     project = make_project([make_page([text_block("Bonjour")])], author="Victor Hugo")
     data, _ = build(project)

@@ -419,7 +419,13 @@ def _block_label(block) -> str:
 
 def _displayed(page: Page, render: RenderSettings) -> list[TextBlock | ImageBlock]:
     blocks = [b for b in page.ordered_blocks() if render.include_hidden_blocks or not b.hidden]
-    return [b for b in blocks if isinstance(b, ImageBlock) or b.text.strip()]
+    has_text = any(isinstance(b, TextBlock) and b.text.strip() for b in blocks)
+    has_page_capture = not has_text and any(
+        isinstance(b, ImageBlock) and not b.manual and b.detection == "drawing" and b.box.area >= 0.75
+        for b in blocks
+    )
+    return [b for b in blocks if isinstance(b, TextBlock) and b.text.strip()
+            or isinstance(b, ImageBlock) and not has_page_capture]
 
 
 def _start_page(c, sheet: SheetGeometry, report: PageReport) -> None:
@@ -511,6 +517,12 @@ def _draw_reconstruction(c, project: Project, page: Page, index: int, image_prov
         return report
     _start_page(c, sheet, report)
     blocks = _displayed(page, render)
+    if not blocks and any(
+        isinstance(block, ImageBlock) and not block.manual and block.detection == "drawing"
+        and block.box.area >= 0.75 for block in page.blocks
+    ):
+        report.warnings.append(f"{label} : une détection couvrant presque toute la page a été écartée, "
+                               "car aucun texte OCR n'a été reconnu. Relancez l'OCR.")
     if not blocks:
         report.warnings.append(f"{label} : aucun bloc affichable ; page blanche exportée sans réutiliser la "
                                "photographie. Lancez l'analyse (OCR) ou ajoutez des blocs.")
@@ -673,7 +685,7 @@ def _draw_page(c, project: Project, page: Page, index: int, mode: str, image_pro
 
 def _check_mode(mode: str, page_image_provider) -> None:
     if mode not in ("reconstruction", "facsimile"):
-        raise PDFGenerationError(f"Mode de PDF inconnu : « {mode} » (attendu : reconstruction ou facsimile).")
+        raise PDFGenerationError(f"Mode de PDF inconnu : « {mode} » (attendu : reconstruction, facsimile).")
     if mode == "facsimile" and page_image_provider is None:
         raise PDFGenerationError("Le mode fac-similé a besoin des images de page : aucune n'a été fournie.")
 

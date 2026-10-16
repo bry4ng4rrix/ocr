@@ -21,8 +21,10 @@ from .storage_service import ProjectStorage, save_project
 
 logger = logging.getLogger("livreocr.export")
 Mode = Literal["reconstruction", "facsimile"]
-MODE_LABELS = {"reconstruction": "PDF reconstruit (texte numérique et illustrations séparées)",
-               "facsimile": "PDF fac-similé (images des pages originales)"}
+MODE_LABELS = {
+    "reconstruction": "PDF reconstruit (mise en page proche de l’original)",
+    "facsimile": "PDF fac-similé (images des pages originales)",
+}
 
 
 @dataclass
@@ -54,7 +56,7 @@ def export_pdf(project: Project, mode: Mode, page_ids: list[str] | None = None, 
         raise PDFGenerationError("Le projet ne contient aucune page.")
     storage = ProjectStorage(project.id).ensure()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    suffix = "reconstruit" if mode == "reconstruction" else "facsimile"
+    suffix = {"reconstruction": "reconstruit", "facsimile": "facsimile"}[mode]
     relative = f"exports/{_slug(project.name)}_{suffix}_{stamp}.pdf"
     target = storage.path(relative)
     if progress:
@@ -72,7 +74,8 @@ def export_pdf(project: Project, mode: Mode, page_ids: list[str] | None = None, 
         logger.exception("validation du PDF en échec")
         validation = {"errors": [f"Vérification impossible : {exc}"]}
     warnings = list(report.warnings)
-    not_rebuilt = [p.page_index + 1 for p in report.pages if not p.reconstructed] if mode == "reconstruction" else []
+    not_rebuilt = ([p.page_index + 1 for p in report.pages if not p.reconstructed]
+                   if mode == "reconstruction" else [])
     missing = pages_needing_ocr(project, page_ids)
     if mode == "reconstruction" and missing:
         warnings.insert(0, f"{len(missing)} page(s) sans OCR à jour : {', '.join(map(str, missing[:20]))}"

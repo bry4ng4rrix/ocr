@@ -148,5 +148,5 @@ Une illustration est rendue ainsi : source (5), puis `page.print_adjustments` (r
 | 4 à 6. OCR, mise en page, illustrations | 🔄 agent 4 | tests sur pages synthétiques |
 | 7. Persistance | 🔄 | aller-retour JSON, rechargement sans OCR |
 | 8 et 10. PDF et validation | 🔄 agent 5 | texte extractible, images, tailles |
-| 9. Interface | ⏳ | test de fumée `AppTest` |
+| 9. Interface | 🔄 | point d'entrée, éditeurs de blocs et export ajoutés ; test de fumée `AppTest` |
 | 11. Qualité et parcours réel | ⏳ | `TEST_REPORT.md` |

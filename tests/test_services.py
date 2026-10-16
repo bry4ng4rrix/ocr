@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from core.document_models import Box, GeometrySettings, ImageBlock, OCRLine, OCRWord, TextBlock
+from core.document_models import Box, GeometrySettings, ImageBlock, OCRLine, OCRWord, Page, TextBlock
 from core.errors import ProjectError
+from core.illustration_extraction import DetectedRegion
+from services import processing_service
 from services import project_service as ps
 from services import storage_service as ss
 from services.history import History
@@ -31,6 +33,52 @@ def pdf_two_pages() -> bytes:
     pages = [Image.fromarray(simple_page().image), Image.fromarray(illustrated_page().image)]
     pages[0].save(buffer, "PDF", save_all=True, append_images=pages[1:], resolution=150)
     return buffer.getvalue()
+
+
+def test_page_sized_illustration_does_not_mask_or_replace_confirmed_page_text():
+    page_region = DetectedRegion(Box(), "drawing", 60.0)
+    illustration = DetectedRegion(Box(x=0.2, y=0.2, width=0.3, height=0.3), "photo", 90.0)
+    words = [(50 + (i % 5) * 180, 50 + (i // 5) * 120,
+              120 + (i % 5) * 180, 75 + (i // 5) * 120) for i in range(20)]
+
+    assert processing_service._ocr_mask_regions([page_region, illustration]) == [illustration.box]
+    assert processing_service._filter_page_backgrounds([page_region, illustration], words, (1000, 1000, 3)) \
+        == [illustration]
+    assert processing_service._filter_page_backgrounds([page_region], words[:19], (1000, 1000, 3)) == [page_region]
+
+
+def test_merge_text_blocks_keeps_text_correction_and_combines_ocr():
+    page = Page(original_path="originals/test.png")
+    first = TextBlock(x=0.1, y=0.1, width=0.4, height=0.1, text="Correction",
+                      ocr_text="Correcion", reading_order=0)
+    second = TextBlock(x=0.1, y=0.25, width=0.5, height=0.1, text="Deuxième",
+                       ocr_text="Deuxieme", reading_order=1)
+    page.blocks = [first, second]
+
+    merged = ps.merge_text_blocks(page, first.id)
+
+    assert merged.text == "Correction\n\nDeuxième"
+    assert merged.ocr_text == "Correcion\n\nDeuxieme"
+    assert (merged.x, merged.y, merged.width, merged.height) == pytest.approx((0.1, 0.1, 0.5, 0.25))
+    assert page.blocks == [merged]
+
+
+def test_split_text_block_preserves_text_and_reading_order():
+    page = Page(original_path="originals/test.png")
+    first = TextBlock(x=0.1, y=0.1, width=0.6, height=0.6,
+                      text="ligne 1\nligne 2\nligne 3", ocr_text="ocr 1\nocr 2\nocr 3",
+                      reading_order=0)
+    following = TextBlock(x=0.1, y=0.8, width=0.6, height=0.1, text="suivant", reading_order=1)
+    page.blocks = [first, following]
+
+    second = ps.split_text_block(page, first, 2)
+
+    assert first.text == "ligne 1\nligne 2"
+    assert first.ocr_text == "ocr 1\nocr 2"
+    assert second.text == "ligne 3"
+    assert second.ocr_text == "ocr 3"
+    assert first.y + first.height == pytest.approx(second.y)
+    assert [block.reading_order for block in page.ordered_blocks()] == [0, 1, 2]
 
 
 def test_import_several_formats_keeps_originals_and_skips_duplicates(workspace):

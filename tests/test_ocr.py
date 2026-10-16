@@ -121,6 +121,28 @@ def test_binarize_helper_keeps_shape():
     assert binary.shape == gray.shape and set(np.unique(binary)) <= {0, 255}
 
 
+def test_empty_ocr_retries_binarized_and_keeps_recognized_text(monkeypatch):
+    gray = np.full((20, 30), 255, np.uint8)
+    empty = ocr_engine.OCRResult([], 30, 20, ["fra"])
+    recovered = ocr_engine.OCRResult(
+        [ocr_engine.OCRWordPx("Bonjour", 1, 1, 10, 5, 90.0)], 30, 20, ["fra"])
+    readings = iter((empty, recovered))
+    images = []
+
+    def fake_run_ocr(image, languages):
+        images.append(image)
+        return next(readings)
+
+    monkeypatch.setattr(ocr_engine, "run_ocr", fake_run_ocr)
+    monkeypatch.setattr(ocr_engine, "_binarize", lambda image: np.zeros_like(image))
+
+    result = ocr_engine.read_page(gray, ["fra"])
+
+    assert len(images) == 2
+    assert result.words[0].text == "Bonjour"
+    assert result.preparation == "binarisé"
+
+
 @requires_tesseract
 def test_low_confidence_retry_keeps_the_better_reading():
     gray = _gray(synthetic.simple_page(size_px=20).image)
