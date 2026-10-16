@@ -1,0 +1,13 @@
+# Versions tested on Python 3.14 (Linux). Lower bounds = features used by the code.
+streamlit>=1.51,<2            # st.components.v2 (block editor) appeared in 1.51; tested 1.66.0
+opencv-python-headless>=4.9,<6   # tested 5.0.0.93
+pillow>=10.0,<13              # tested 12.3.0
+numpy>=1.26,<3                # tested 2.5.4
+reportlab>=4.0,<6             # PDF generation, TrueType embedding; tested 5.0.1
+pypdfium2>=4.30,<6            # PDF import, preview rasterisation, PDF validation; tested 5.14.0
+pydantic>=2.6,<3              # typed document model; tested 2.14.1
+
+# Tests
+pytest>=8                     # tested 9.1.1
+
+# System dependency (not pip): Tesseract OCR 5 with the language data you need (fra, eng, osd).

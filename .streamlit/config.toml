@@ -1,0 +1,14 @@
+[server]
+# Local, single-user application: uploads are limited here and again per file in config.py.
+maxUploadSize = 500
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1f6f8b"

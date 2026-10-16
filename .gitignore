@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local projects, uploaded scans, generated PDFs and logs (private documents)
+workspace/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
