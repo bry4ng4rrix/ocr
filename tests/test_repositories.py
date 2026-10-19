@@ -109,6 +109,18 @@ def test_save_and_get_book(test_db):
     assert page2.review_required is True
 
 
+def test_save_book_fills_missing_route_band(test_db):
+    project = _sample_project()
+    project.pages[0].route_band = None
+    project.pages[1].route_band = None
+    book_repository.save_book(project, db_path=test_db)
+
+    reloaded = book_repository.get_book(project.id, db_path=test_db)
+    assert reloaded is not None
+    assert reloaded.pages[0].route_band == "B"
+    assert reloaded.pages[1].route_band == "B"
+
+
 def test_list_books_statistics(test_db):
     project = _sample_project()
     book_repository.save_book(project, db_path=test_db)

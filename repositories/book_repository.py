@@ -91,6 +91,9 @@ def save_book(project: Project, *, db_path: Path | None = None) -> None:
                 "enhancement": page.enhancement.model_dump(mode="json"),
                 "issues": [issue.model_dump(mode="json") for issue in page.issues],
             }
+            route_band = page.route_band or "B"
+            if page.route_band is None:
+                page.route_band = route_band
             conn.execute(
                 """
                 INSERT INTO pages (
@@ -118,7 +121,7 @@ def save_book(project: Project, *, db_path: Path | None = None) -> None:
                     page.source_sha256,
                     page.original_name,
                     page.status.value,
-                    page.route_band,
+                    route_band,
                     page.mean_confidence,
                     1 if page.review_required else 0,
                     page.error,

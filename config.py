@@ -79,7 +79,7 @@ ROUTE_CONFIDENCE_DOUBTFUL = _int("BOOKOCR_ROUTE_DOUBTFUL", 60)
 # IA locale / cloud : désactivées par défaut, aucun appel si false
 OLLAMA_ENABLED = _bool("OLLAMA_ENABLED", False)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "")
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma3:4b")
 OLLAMA_TIMEOUT = _int("OLLAMA_TIMEOUT", 120)
 GEMINI_ENABLED = _bool("GEMINI_ENABLED", False)
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")

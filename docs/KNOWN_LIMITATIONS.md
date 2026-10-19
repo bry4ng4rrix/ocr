@@ -45,3 +45,12 @@ Propriétaire : `integration-documentation`. Une limite est **constatée** (preu
 ## PDF
 
 - PyMuPDF est sous licence AGPL-3.0. C'est sans conséquence en usage local, mais une contrainte en cas de redistribution (D-04).
+
+## Numérisation PDF (fac-similé)
+
+- Les contours OpenCV sont des propositions : reliure sombre, fond de couleur proche du papier, bords masqués ou pages fortement courbées demandent souvent un cadrage manuel.
+- La séparation d'une double page utilise une ligne de reliure réglable ; elle ne redresse pas encore indépendamment les deux plans perspectifs d'une double page courbée. Vérifier l'aperçu avant validation.
+- L'ajustement manuel actuel est rectangulaire dans l'image source ; les quatre coins d'une page en forte perspective ne sont pas éditables séparément dans cette première version.
+- L'ordre se modifie dans le tableau avant export. La suppression exige une case de confirmation.
+- Les images actives sont gardées dans l'état de session Streamlit jusqu'à sa réinitialisation ; pour de très gros lots, travailler par lots évite de conserver toutes les sources haute résolution en RAM.
+- Ollama est facultatif et requiert `OLLAMA_ENABLED=true`, `OLLAMA_BASE_URL` (par défaut `http://localhost:11434`) et `OLLAMA_VISION_MODEL` (par défaut `gemma3:4b`). Le modèle doit être installé séparément ; aucun téléchargement automatique n'est lancé.

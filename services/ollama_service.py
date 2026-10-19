@@ -44,6 +44,19 @@ def list_models(timeout: float = 2.0) -> list[str]:
     return names
 
 
+def preferred_vision_model(models: list[str]) -> str:
+    """Choisit le modèle vision disponible, avec un comportement sûr et reproductible."""
+    configured = (config.OLLAMA_VISION_MODEL or "").strip()
+    if configured:
+        return configured
+
+    preferred_names = ["gemma3:4b", "gemma3", "llama3.2-vision", "llava", "qwen2.5vl"]
+    for preferred in preferred_names:
+        if any(name == preferred or name.startswith(f"{preferred}:") or name.startswith(preferred) for name in models):
+            return preferred
+    return models[0] if models else ""
+
+
 def status() -> OllamaStatus:
     if not is_enabled():
         return OllamaStatus(enabled=False, available=False, base_url=config.OLLAMA_BASE_URL,
@@ -53,9 +66,9 @@ def status() -> OllamaStatus:
     except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as error:
         logger.info("Ollama indisponible : %s", type(error).__name__)
         return OllamaStatus(enabled=True, available=False, base_url=config.OLLAMA_BASE_URL,
-                            vision_model=config.OLLAMA_VISION_MODEL,
+                            vision_model=(config.OLLAMA_VISION_MODEL or "").strip(),
                             message="Le serveur Ollama ne répond pas. Le pipeline local continue.")
-    vision = config.OLLAMA_VISION_MODEL
+    vision = preferred_vision_model(models)
     compatible = (not vision) or any(vision == name or name.startswith(f"{vision}:") or name.startswith(vision)
                                      for name in models)
     if vision and not compatible:

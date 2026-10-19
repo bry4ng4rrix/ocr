@@ -6,7 +6,7 @@ import streamlit as st
 
 from components import common
 from models import Project
-from services import ocr_service, processing_service, project_service
+from services import ocr_service, ollama_service, processing_service, project_service
 from services.processing_service import ALL_STEPS, STEP_LABELS, Step
 
 PSM_LABELS = {
@@ -43,12 +43,24 @@ def _launch(page_ids: list[str], steps: list[Step], redetect: bool) -> None:
 
 installed = ocr_service.available_languages()
 version = ocr_service.tesseract_version()
+ollama = ollama_service.status()
+
 st.caption(f"Tesseract {version or 'introuvable'} · langues installées : {', '.join(installed) or 'aucune'}")
 if not version:
     st.error("Tesseract est introuvable : installez-le (sudo pacman -S tesseract tesseract-data-fra) pour lancer "
              "l'OCR. La correction géométrique reste possible.", icon=":material/error:")
 elif "deu" not in installed:
     st.info("L'allemand (deu) n'est pas installé : sudo pacman -S tesseract-data-deu", icon=":material/translate:")
+
+if ollama.enabled:
+    if ollama.available:
+        model_label = ollama.vision_model or "modèle vision détecté automatiquement"
+        st.success(f"Ollama prêt : {model_label}. Le pipeline IA local reste optionnel et non destructif.",
+                   icon=":material/check_circle:")
+    else:
+        st.warning(f"Ollama activé mais non disponible : {ollama.message}", icon=":material/warning:")
+else:
+    st.caption("Ollama est désactivé. Le traitement local continue sans appel IA. ")
 
 settings_scope = f"ocr_{project.id}"
 common.sync_widgets(settings_scope, {"languages": [lang for lang in project.languages if lang in installed],

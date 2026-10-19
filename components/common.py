@@ -37,6 +37,7 @@ SCREEN_EDITOR = "components/screens/editor.py"
 SCREEN_TYPOGRAPHY = "components/screens/typography.py"
 SCREEN_REVIEW = "components/screens/review.py"
 SCREEN_EXPORT = "components/screens/export.py"
+SCREEN_PDF_SCAN = "components/screens/pdf_scan.py"
 
 STATE_DEFAULTS: dict[str, object] = {
     "project_id": None,       # projet ouvert

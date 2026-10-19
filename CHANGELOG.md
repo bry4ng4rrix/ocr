@@ -5,6 +5,7 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 ## [Non publié]
 
 ### Ajouté — 2026-10-19
+- Écran « Numérisation et amélioration PDF » : import d'images/PDF, recadrage et séparation réglable, modes d'amélioration locaux, validation et réordonnancement par page, export PDF/ZIP ; analyse Gemma facultative via Ollama.
 - Écran « Aperçu en direct » (`components/screens/live_preview.py`) : comparaison côte à côte temps réel avec à gauche l'image (originale ou corrigée avec surlignage optionnel des boîtes) et à droite le texte extrait sur une page blanche sans fond, avec sélecteur de mode (disposition positionnée fidèle ou flux de lecture structuré).
 - Module de rendu pur `components/live_preview_render.py` (`render_positioned_html`, `render_flow_html`, `draw_overlay_boxes`) et tests associés (`tests/test_live_preview.py`).
 

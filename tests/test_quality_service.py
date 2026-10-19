@@ -62,6 +62,15 @@ def test_ollama_disabled_by_default():
     assert status.available is False
 
 
+def test_ollama_uses_installed_vision_model_by_default(monkeypatch):
+    monkeypatch.setattr("config.OLLAMA_ENABLED", True)
+    monkeypatch.setattr("config.OLLAMA_VISION_MODEL", "")
+    monkeypatch.setattr(ollama_service, "list_models", lambda timeout=2.0: ["gemma3:4b", "llama3.2"])
+    status = ollama_service.status()
+    assert status.available is True
+    assert status.vision_model == "gemma3:4b"
+
+
 def test_gemini_disabled_without_key(monkeypatch):
     monkeypatch.setattr("config.GEMINI_ENABLED", True)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)

@@ -23,6 +23,7 @@ Tenue par l'agent principal. Une tâche passe à `DONE` seulement quand ses crit
 | T-34 | Interface : écran Traitement (langues, progression, erreurs) | P4 | P1 | T-33 | streamlit-ux-specialist | AppTest ; traitement non bloquant | TODO |
 | T-35 | OCR allemand (le corpus réel est en allemand) | P4 | P0 | T-31 | utilisateur | `tesseract --list-langs` contient `deu` | DONE (19/10 : vérifié, deu est installé dans /usr/share/tessdata) |
 | T-70 | Audit Phase 1 du Prompt Maître (8 400 pages, OpenCV, OCR, IA, DOCX/PDF, SQLite) | P0 | P0 | — | principal + software-architect | Rapport `docs/audit.md` rédigé, 345 tests vérifiés, plan de migration défini | DONE (19/10 : `docs/audit.md` rédigé, environnement Python 3.14 audité, PaddleOCR documenté) |
+| T-80 | Numérisation fac-similé : import image/PDF, détection, séparation, amélioration, analyse Ollama facultative, export une image par feuille | P1 | P1 | services image/PDF existants | principal | Tests ciblés, écran AppTest, validation du nombre et de l'ordre des feuilles | IN_PROGRESS (services, écran et tests ajoutés ; vérification en cours) |
 
 ## Prochain lot
 
