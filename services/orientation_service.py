@@ -590,6 +590,13 @@ def _detect_sheet(image: np.ndarray, geometry: GeometryCorrection, issues: list[
             found = by_paper
             issues.append(_issue("quad_from_paper", "Contour de la page trouvé par la couleur du papier "
                                  "(fond irrégulier autour de la page).", Severity.INFO))
+        elif found is None:
+            # Page sombre ou colorée (couverture, photo pleine page) sur fond sombre : ses bords droits.
+            by_lines = page_bounds.detect_line_quad(image)
+            if by_lines is not None:
+                found = by_lines
+                issues.append(_issue("quad_from_lines", "Contour de la page trouvé par ses bords droits "
+                                     "(page sombre ou colorée) : vérifiez le recadrage.", Severity.INFO))
     geometry.detected_quad = found.corners if found else None
     geometry.quad_uncertain = bool(found and found.uncertain)
     if found is None:

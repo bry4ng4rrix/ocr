@@ -68,3 +68,13 @@ Une confiance OCR basse **ne bloque pas** : le client n'exige pas de correction 
 - flux image du PDF **identique octet pour octet** au JPEG final (pas de recompression ni de rotation) ;
 - écart moyen Lab entre le rendu PDF et l'image finale ≤ 6 ;
 - recherche de mots témoins (les plus longs mots OCR fiables de chaque page).
+
+### Suppression du fond et centrage (réglages du livre, activés par défaut)
+
+- **Fond** : division par le fond papier estimé, puis rampe douce de la clarté relative (≤ 0,62 : encre gardée ; ≥ 0,88 : blanc). Le texte n'est jamais seuillé : son lissage et sa couleur restent.
+- **Images protégées** : photos, illustrations et aplats colorés (`image_service.picture_mask`), plus les rectangles nettement encadrés (3 à 85 % de la page). Elles sont seulement éclaircies comme le papier voisin, avec un raccord adouci.
+- **Contrôle** :
+  - le blanc du papier n'est pas un « écrêtage » ;
+  - la fidélité des couleurs est mesurée par l'écart de **teinte** dans les images (pondéré par la saturation ; seuil 8 ≈ 16°), car éclaircir une photo change a\*b\* sans changer ses couleurs ;
+  - le cadrage comparé est le même avant et après (page redressée rognée comme l'image finale).
+- **Centrage** : bloc de contenu = première et dernière rangée et colonne contenant au moins 0,3 % d'encre, sur 3 rangées consécutives (poussières ignorées), marge de 1 %. Dans le PDF de format commun, le centre de ce bloc est placé au centre de la page. Cela ne se fait que sur fond supprimé : ailleurs, le bord de la photo se verrait.

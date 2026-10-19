@@ -405,4 +405,15 @@ Compléments v1.1 (19/10) :
 - `pdf_export.build_searchable_pdf(..., uniform=True)` : pages de même format, images ajustées et centrées.
 - `scanning_service.create_book`, `import_book_files` (ordre naturel), `import_book_folder`, `describe_changes`, `export_book_pdf(..., uniform=True)`.
 
+Compléments v1.2 (19/10, suppression du fond) :
+- `ScanBookSettings` (`remove_background`, `center_content`), dans `scan/settings.json` (`load_book_settings`, `save_book_settings`, `requeue_book`).
+- `ScanAdjustments.background_removal` et `image_enhancement.remove_background(rgb, strength)`, `image_regions(rgb)` ; `plan_adjustments(..., remove_background=True)`.
+- `image_quality_service.content_box(rgb) -> Box | None` ; `compare(..., background_removed=True)` (pas d'écrêtage compté sur le papier, dérive de teinte mesurée dans les images).
+- `ScanPageRecord.content_box`, `SearchablePageInput.content_box` : centrage du bloc de contenu dans `build_searchable_pdf(uniform=True)`.
+
+Compléments v1.3 (19/10, pages sombres) : `orientation_service._detect_sheet` essaie, dans l'ordre, trois détecteurs :
+1. `detect_page_quad`, feuille claire sur fond sombre ;
+2. `page_bounds.detect_paper_quad`, couleur du papier, réservé aux papiers clairs (clarté Lab ≥ 110) ;
+3. `page_bounds.detect_line_quad`, bords droits alignés, seulement si aucun contour n'a été trouvé (code `quad_from_lines`).
+
 Règles : Gemma ne fixe jamais de coordonnées ni de rotation ; une orientation incertaine (OSD) ou contredite par Gemma passe la page en `REVIEW_REQUIRED` sans rotation ; `OLLAMA_AUTO_APPLY=false` (défaut) : le traitement applique le plan **mesuré** et range le plan Gemma dans `proposed_plan` (aperçu puis validation) ; `true` : le plan combiné est appliqué, les incertitudes passent en vérification. Les originaux ne sont jamais réécrits ; chaque réglage est un paramètre rejoué depuis la page redressée.

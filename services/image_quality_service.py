@@ -26,6 +26,7 @@ MIN_CONTRAST_RATIO = 0.6       # contraste après < 60 % de l'avant : page déla
 MAX_COLOR_SHIFT = 8.0          # dérive chromatique moyenne (a*b*) : au-delà, les couleurs ont dérivé
 MAX_COLOR_LOSS = 0.5           # couleur après < 50 % de l'avant sur une page colorée
 COLORFUL_PAGE = 15.0           # indice de Hasler au-dessus duquel la page est jugée colorée
+LIGHT_PAPER_MIN = 90.0         # sous cette clarté de papier (page sombre), l'« encre au bord » n'a pas de sens
 MAX_BORDER_CONTENT = 0.06      # part d'encre dans la bande de bord : contenu peut-être coupé
 DARK_STRIP_RELATIVE = 0.45     # rangée de bord plus sombre que 45 % du papier : fond du banc, pas la page
 EDGE_LINE_BAND = 0.04         # recherche d'une ligne de bord de page dans les 4 % extérieurs
@@ -316,7 +317,7 @@ def compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics 
         degraded.append("Couleurs de la page fortement atténuées.")
     if second.border_content > MAX_BORDER_CONTENT and second.border_content > first.border_content + 0.05:
         degraded.append("Du contenu apparaît au bord après rognage : il a peut-être été coupé.")
-    if not degraded and first.border_content > MAX_BORDER_CONTENT:
+    if not degraded and first.border_content > MAX_BORDER_CONTENT and first.paper_level >= LIGHT_PAPER_MIN:
         warnings.append("Contenu dense au bord de la page redressée : vérifiez que rien n'a été coupé.")
     reasons = degraded + warnings
     if not reasons:

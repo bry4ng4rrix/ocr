@@ -304,7 +304,9 @@ def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = No
 
     # Bandes de fond restées aux bords après redressement
     crops: dict[str, float] = {}
-    for side, width in zip(("crop_left", "crop_top", "crop_right", "crop_bottom"), metrics.dark_edges):
+    # Sans papier clair (couverture, photo pleine page), « bande sombre » et « encre » ne veulent rien dire.
+    edge_strips = metrics.dark_edges if metrics.paper_level >= PAPER_MIN else (0.0, 0.0, 0.0, 0.0)
+    for side, width in zip(("crop_left", "crop_top", "crop_right", "crop_bottom"), edge_strips):
         if EDGE_STRIP_MIN <= width < EDGE_STRIP_MAX:
             crops[side] = round(min(EDGE_STRIP_MAX, width + EDGE_SAFETY), 4)
         elif width >= EDGE_STRIP_MAX:

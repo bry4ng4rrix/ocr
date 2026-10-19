@@ -4,6 +4,19 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Corrigé — 2026-10-19 (cadrage des pages sombres)
+- Une couverture ou une page sombre (photo pleine page) sur le banc noir n'était pas détectée : la photo entière était gardée. Ajout de `page_bounds.detect_line_quad`, troisième recours après les deux autres détecteurs. Il cherche une paire de bords haut et bas alignés, prend les bords latéraux sur les traits verticaux proches ou les relie entre les extrémités (bord invisible sur fond noir), et refuse un contour qui englobe du fond (bande intérieure sombre et neutre) ou qui n'est pas posé sur un fond sombre.
+- Le secours « couleur du papier » est réservé aux papiers clairs. Pages sans papier clair : ni rognage des bords ni fausse alerte « bande sombre » ou « encre au bord ».
+
+### Ajouté — 2026-10-19 (suppression du fond et centrage du contenu)
+- **Suppression du fond**, réglage du livre activé par défaut, avec un curseur par page :
+  - le papier devient blanc pur après égalisation de l'éclairage ;
+  - le texte garde sa forme, son lissage et sa couleur (transition douce, pas de seuillage) ;
+  - les images sont conservées : photos, illustrations, aplats colorés et rectangles encadrés (`image_enhancement.remove_background`, `image_regions`).
+- **Contrôle qualité adapté** : le blanc du papier n'est plus compté comme un écrêtage ; la fidélité des couleurs est mesurée par la teinte, dans les images seulement.
+- **Centrage du contenu dans le PDF** (réglage du livre, activé par défaut) : le bloc de texte et d'images (`image_quality_service.content_box`) est centré sur une page de format commun ; la couche OCR suit le décalage.
+- Réglages enregistrés par livre (`scan/settings.json`) ; bouton « Retraiter tout le livre » après un changement (les réglages faits à la main sont conservés).
+
 ### Modifié — 2026-10-19 (numérisation intelligente, retours utilisateur)
 - Écran réorganisé en 5 étapes. Un livre (existant ou nouveau) reçoit toutes ses photos en une fois, par téléversement ou depuis un dossier local, dans l'ordre naturel des noms. Un bouton « Importer et traiter le livre » lance le traitement. La galerie montre chaque page avant/après avec la liste des modifications faites. Viennent ensuite la retouche d'une page et le PDF du livre.
 - Bords de page plus robustes (`services/page_bounds.py`) : secours par la couleur du papier quand la page n'est pas claire sur fond sombre (marge blanche, bandes noires, tranche du livre). Il n'est utilisé que si du fond entoure au moins 3 côtés et s'il ne contredit pas un contour existant.
