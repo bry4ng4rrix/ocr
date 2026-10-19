@@ -9,6 +9,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from models.geometry import Box
 from models.scanning import ImageMetrics, QualityCheck
 from services import orientation_service
 from services.image_service import downscale, paper_background, to_gray
@@ -35,7 +36,14 @@ FOREIGN_PAPER_SHARE = 0.3      # rangée « sans papier » : moins de 30 % de pi
 MAX_DARK_STRIP = 0.08          # une bande plus large n'est plus un simple reste de fond
 NOISE_WINDOW = 1024            # recadrage central (pixels) pour l'estimation du bruit
 NOISE_FLAT_PERCENTILE = 60     # pixels les moins contrastés retenus (les lettres sont exclues)
-INTERIOR_MARGIN = 0.01         # marge retirée en plus des bandes sombres pour les mesures tonales
+INTERIOR_MARGIN = 0.01
+CONTENT_INK_RELATIVE = 0.85    # encre ou image : pixel sous 85 % de la clarté du papier
+HUE_MIN_CHROMA = 8.0           # pixels assez colorés pour que leur teinte ait un sens
+HUE_DEGREES_PER_UNIT = 2.0     # 8 unités (seuil MAX_COLOR_SHIFT) = 16° de teinte
+CONTENT_MIN_PIXELS = 50
+CONTENT_MIN_SHARE = 0.003      # une rangée est du contenu si au moins 0,3 % de ses pixels sont de l'encre
+CONTENT_MIN_RUN = 3            # ... et fait partie d'une suite d'au moins 3 rangées
+CONTENT_PADDING = 0.01         # marge gardée autour du bloc de contenu         # marge retirée en plus des bandes sombres pour les mesures tonales
 
 
 def _luminance(rgb: np.ndarray) -> np.ndarray:
@@ -218,19 +226,87 @@ def color_shift(before: np.ndarray, after: np.ndarray) -> float:
     return float(np.linalg.norm(lab_before[..., 1:] - lab_after[..., 1:], axis=2).mean())
 
 
-def compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics | None = None) -> QualityCheck:
-    """Contrôle de l'amélioration : `before` = page redressée, `after` = page améliorée."""
+def _content_extent(profile: np.ndarray) -> tuple[int, int] | None:
+    """Première et dernière rangée de contenu : au moins CONTENT_MIN_SHARE d'encre, dans une suite d'au
+    moins CONTENT_MIN_RUN rangées (une poussière isolée ne compte pas)."""
+    active = profile >= CONTENT_MIN_SHARE
+    runs = np.convolve(active.astype(np.int32), np.ones(CONTENT_MIN_RUN, np.int32), mode="valid")
+    hits = np.nonzero(runs >= CONTENT_MIN_RUN)[0]
+    if not len(hits):
+        return None
+    return int(hits[0]), int(hits[-1] + CONTENT_MIN_RUN)
+
+
+def content_box(rgb: np.ndarray) -> Box | None:
+    """Bloc de contenu (texte, images, numéro de page) d'une page à fond blanc, marge de 1 %.
+
+    Profils d'encre par ligne et par colonne (pixel sous CONTENT_INK_RELATIVE × papier). None si vide.
+    """
+    small = downscale(_luminance(rgb), MEASURE_SIDE)[0]
+    paper = max(float(np.percentile(small, 90)), 1.0)
+    ink = cv2.morphologyEx((small < CONTENT_INK_RELATIVE * paper).astype(np.uint8), cv2.MORPH_OPEN,
+                           np.ones((2, 2), np.uint8))
+    if int(ink.sum()) < CONTENT_MIN_PIXELS:
+        return None
+    rows, columns = _content_extent(ink.mean(axis=1)), _content_extent(ink.mean(axis=0))
+    if rows is None or columns is None:
+        return None
+    height, width = small.shape
+    x0, x1 = columns[0] / width - CONTENT_PADDING, columns[1] / width + CONTENT_PADDING
+    y0, y1 = rows[0] / height - CONTENT_PADDING, rows[1] / height + CONTENT_PADDING
+    x0, y0, x1, y1 = max(0.0, x0), max(0.0, y0), min(1.0, x1), min(1.0, y1)
+    if x1 - x0 <= 0.05 or y1 - y0 <= 0.05:
+        return None
+    return Box(x=round(float(x0), 5), y=round(float(y0), 5), w=round(float(x1 - x0), 5), h=round(float(y1 - y0), 5))
+
+
+def image_color_shift(before: np.ndarray, after: np.ndarray) -> float:
+    """Dérive de teinte mesurée seulement dans les images de la page (0 s'il n'y en a pas)."""
+    from services import image_enhancement
+
+    small_before = downscale(before, COMPARE_SIDE)[0]
+    small_after = cv2.resize(after, (small_before.shape[1], small_before.shape[0]), interpolation=cv2.INTER_AREA)
+    regions = cv2.erode(image_enhancement.image_regions(small_before, COMPARE_SIDE).astype(np.uint8),
+                        np.ones((5, 5), np.uint8)).astype(bool)
+    if regions.sum() < 200:
+        return 0.0
+    lab_before = cv2.cvtColor(small_before.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
+    lab_after = cv2.cvtColor(small_after.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
+    # Éclaircir une photo change a*b* sans changer ses couleurs : on mesure l'écart de TEINTE (angle), pondéré
+    # par la saturation, ramené à une échelle comparable (MAX_COLOR_SHIFT = 8 ≈ 16° de teinte).
+    chroma = np.hypot(lab_before[..., 1], lab_before[..., 2])
+    weight = np.where(regions & (chroma > HUE_MIN_CHROMA), chroma, 0.0)
+    if weight.sum() <= 0:
+        return 0.0
+    hue_before = np.arctan2(lab_before[..., 2], lab_before[..., 1])
+    hue_after = np.arctan2(lab_after[..., 2], lab_after[..., 1])
+    difference = np.degrees(np.abs(np.angle(np.exp(1j * (hue_after - hue_before)))))
+    return float((difference * weight).sum() / weight.sum() / HUE_DEGREES_PER_UNIT)
+
+
+def compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics | None = None, *,
+            background_removed: bool = False) -> QualityCheck:
+    """Contrôle de l'amélioration : `before` = page redressée, `after` = page améliorée.
+
+    background_removed : le fond a été volontairement mis en blanc ; le blanc du papier n'est pas un écrêtage
+    et la fidélité des couleurs est mesurée sur les images (photos, illustrations) seulement.
+    """
     first = before_metrics or measure(before)
     second = first if after is before or (after.shape == before.shape and np.array_equal(after, before)) \
         else measure(after)
-    shift = 0.0 if second is first else color_shift(before, after)
+    if second is first:
+        shift = 0.0
+    elif background_removed:
+        shift = image_color_shift(before, after)
+    else:
+        shift = color_shift(before, after)
     degraded: list[str] = []
     warnings: list[str] = []
     if first.sharpness > 1 and second.sharpness < MAX_SHARPNESS_LOSS * first.sharpness:
         degraded.append(f"Netteté fortement réduite ({first.sharpness:.0f} → {second.sharpness:.0f}).")
     if second.dark_clip - first.dark_clip > MAX_CLIP_INCREASE:
         degraded.append("Ombres bouchées : des détails sombres sont perdus.")
-    if second.bright_clip - first.bright_clip > MAX_CLIP_INCREASE:
+    if not background_removed and second.bright_clip - first.bright_clip > MAX_CLIP_INCREASE:
         degraded.append("Hautes lumières brûlées : des détails clairs sont perdus.")
     if first.contrast > 5 and second.contrast < MIN_CONTRAST_RATIO * first.contrast:
         degraded.append("Contraste effondré : page délavée.")

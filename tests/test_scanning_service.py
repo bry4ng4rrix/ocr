@@ -254,3 +254,22 @@ def test_book_folder_import_requires_photos(data_dir, tmp_path):
         scanning_service.import_book_folder(project, tmp_path / "vide")
     with pytest.raises(ProcessingError):
         scanning_service.create_book("  ", ["fra"])
+
+
+def test_book_settings_background_removal_and_centering(data_dir, tmp_path, photographed):
+    project, _ = _project(data_dir, tmp_path, [photographed])
+    settings = scanning_service.load_book_settings(project)
+    assert settings.remove_background and settings.center_content          # défauts
+    page_id = project.pages[0].id
+    record = scanning_service.process_page(project, page_id, use_ai=False)
+    assert record.adjustments.background_removal == 100 and record.content_box is not None
+    final = scanning_service.load_final(project, record)
+    assert np.percentile(final, 95) >= 250                                 # papier blanc
+    inputs, _ = scanning_service.export_inputs(project)
+    assert inputs[0].content_box == record.content_box
+    scanning_service.save_book_settings(project, settings.model_copy(update={"remove_background": False}))
+    assert scanning_service.requeue_book(project) == 1
+    record = scanning_service.process_page(project, page_id, use_ai=False)
+    assert record.adjustments.background_removal == 0 and record.content_box is None
+    report, validation = scanning_service.export_book_pdf(project)
+    assert validation.passed, validation.issues

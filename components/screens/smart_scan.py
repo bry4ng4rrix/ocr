@@ -19,7 +19,8 @@ import config
 from components import common
 from models.errors import AiUnavailableError, BookOcrError
 from models.geometry import Point
-from models.scanning import ScanAdjustments, ScanState, SearchablePdfReport, SearchablePdfValidation
+from models.scanning import (ScanAdjustments, ScanBookSettings, ScanState, SearchablePdfReport,
+                             SearchablePdfValidation)
 from repositories import scan_repository
 from services import (image_analysis_service, image_service, ocr_service, ollama_service, project_service,
                       scanning_service)
@@ -39,6 +40,7 @@ SOURCE_LABELS = {"neutral": "Aucune correction", "measured": "Mesures", "gemma":
 FILTERS = {"Toutes": None, "À vérifier": [ScanState.REVIEW_REQUIRED], "En erreur": [ScanState.FAILED],
            "En attente": [ScanState.PENDING, ScanState.PROCESSING], "Terminées": [ScanState.COMPLETED]}
 SLIDERS = {  # champ: (libellé, min, max, pas)
+    "background_removal": ("Suppression du fond (images conservées)", 0.0, 100.0, 5.0),
     "paper_whitening": ("Nettoyage du fond (papier blanc)", 0.0, 100.0, 5.0),
     "exposure": ("Exposition (gain)", -30.0, 40.0, 1.0),
     "brightness": ("Luminosité", -50.0, 50.0, 1.0),
@@ -150,11 +152,32 @@ with st.container(border=True):
         uploads = st.file_uploader("Toutes les photos du livre (ordre des noms de fichiers)", type=UPLOAD_TYPES,
                                    accept_multiple_files=True,
                                    key=f"scan_uploads_{st.session_state.get('_scan_upload_round', 0)}")
+    existing = project_service.open_project(choice) if choice != NEW_BOOK else None
+    settings = scanning_service.load_book_settings(existing) if existing else ScanBookSettings()
+    with st.container(horizontal=True):
+        remove_background = st.toggle("Supprimer le fond (papier blanc), sauf les images", value=settings.remove_background,
+                                      key=f"scan_remove_bg_{choice}",
+                                      help="Le papier devient blanc ; texte, photos, illustrations et encadrés "
+                                           "colorés sont conservés.")
+        center_content = st.toggle("Centrer le contenu dans le PDF", value=settings.center_content,
+                                   key=f"scan_center_{choice}",
+                                   help="Sur les pages à fond supprimé, le bloc de texte et d'images est centré "
+                                        "sur une page PDF de format commun.")
+    wanted_settings = ScanBookSettings(remove_background=remove_background, center_content=center_content)
+    if existing is not None and wanted_settings != settings:
+        scanning_service.save_book_settings(existing, wanted_settings)
+        if wanted_settings.remove_background != settings.remove_background and existing.pages:
+            st.session_state["_scan_settings_changed"] = existing.id
+    if st.session_state.get("_scan_settings_changed") == choice:
+        st.info("Réglage du fond modifié : retraitez le livre pour l'appliquer aux pages déjà traitées "
+                "(les réglages faits à la main sont conservés).", icon=":material/info:")
     with st.container(horizontal=True, vertical_alignment="bottom"):
         use_ai = st.toggle("Analyse Gemma pendant le traitement", value=False, disabled=not ai_ready,
                            help="Facultatif. Environ 2 minutes par page sur ce poste (mesuré) ; sans IA : ≈ 17 s.")
         has_input = bool(uploads) or bool(folder.strip())
         label = "Importer et traiter le livre" if has_input else "Traiter le livre"
+        if existing is not None and not has_input and st.session_state.get("_scan_settings_changed") == choice:
+            label = "Retraiter tout le livre"
         go = st.button(label, type="primary", icon=":material/play_arrow:", disabled=running or (
             choice == NEW_BOOK and not has_input))
 
@@ -162,6 +185,10 @@ if go:
     with common.user_action() as result, st.spinner("Import des photos…"):
         project = scanning_service.create_book(new_name, languages) if choice == NEW_BOOK \
             else project_service.open_project(choice)
+        scanning_service.save_book_settings(project, wanted_settings)
+        if label == "Retraiter tout le livre":
+            scanning_service.requeue_book(project)
+            st.session_state.pop("_scan_settings_changed", None)
         report = None
         if uploads:
             report = scanning_service.import_book_files(project, [(file.name, file.getvalue()) for file in uploads])
@@ -499,8 +526,9 @@ st.subheader("5. PDF du livre")
 st.caption("Un PDF par livre : photographies finales en couleur, couche OCR invisible, ordre du livre. "
            "Toutes les pages doivent être traitées et à jour.")
 with st.container(horizontal=True):
-    uniform = st.toggle("Pages de même format, contenu centré", value=True, key="scan_uniform",
-                        help="Chaque page photographiée est centrée sur une page PDF de format commun (marge blanche).")
+    uniform = st.toggle("Pages de même format (marge blanche)", value=True, key="scan_uniform",
+                        help="Toutes les pages PDF ont le même format ; chaque page y est centrée. Avec « Centrer le "
+                             "contenu » (étape 1), c'est le bloc de texte et d'images qui est centré.")
     include_unvalidated = st.toggle("Inclure les pages à vérifier non validées", value=True, key="scan_include")
 if st.button("Exporter le PDF du livre", icon=":material/picture_as_pdf:", type="primary", disabled=running):
     with common.user_action() as result, st.spinner("Création et contrôle du PDF…"):

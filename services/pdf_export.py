@@ -142,6 +142,7 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
     L'image (JPEG final, sans EXIF) est insérée sans recompression ; la page n'est jamais tournée. Par défaut
     la page a la taille de l'image. `uniform=True` : toutes les pages ont le même format (taille médiane des
     images + `margin` de chaque côté) ; chaque image y est ajustée sans déformation et centrée (fond blanc).
+    Si l'entrée a un `content_box` (page à fond supprimé), c'est ce bloc de contenu qui est centré.
     Les mots sont écrits en mode de rendu 3 (invisibles, pas de texte blanc) dans leur boîte.
     """
     import pymupdf
@@ -168,8 +169,18 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
                 page = document.new_page(width=page_width, height=page_height)
                 fit = min(content_width / width, content_height / height)
                 shown_width, shown_height = width * fit, height * fit
-                x0, y0 = (page_width - shown_width) / 2, (page_height - shown_height) / 2
+                if item.content_box is not None:
+                    # Centre du bloc de contenu au centre de la page (fond blanc : le blanc débordant est coupé).
+                    box = item.content_box
+                    x0 = page_width / 2 - (box.x + box.w / 2) * shown_width
+                    y0 = page_height / 2 - (box.y + box.h / 2) * shown_height
+                else:
+                    x0, y0 = (page_width - shown_width) / 2, (page_height - shown_height) / 2
                 area = pymupdf.Rect(x0, y0, x0 + shown_width, y0 + shown_height)
+                if item.content_box is not None and not page.rect.contains(_content_rect(area, item.content_box)):
+                    report.issues.append(Issue(
+                        code="scan_pdf_content_clipped", severity=Severity.WARNING, page_id=item.page_id,
+                        message=f"Page {index + 1} : le bloc de contenu centré dépasse la page."))
             else:
                 page = document.new_page(width=width * points, height=height * points)
                 area = page.rect
@@ -207,6 +218,13 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
     return report
 
 
+def _content_rect(area, box):
+    import pymupdf
+
+    return pymupdf.Rect(area.x0 + box.x * area.width, area.y0 + box.y * area.height,
+                        area.x0 + box.right * area.width, area.y0 + box.bottom * area.height)
+
+
 def _probe_words(ocr: OcrResult, count: int) -> list[str]:
     candidates = []
     for word in ocr.words:
@@ -219,15 +237,21 @@ def _probe_words(ocr: OcrResult, count: int) -> list[str]:
 
 
 def _render_delta(page, image_bytes: bytes, area) -> float:
-    """Écart moyen Lab entre le rendu de la zone image (couche texte comprise) et l'image source réduite."""
+    """Écart moyen Lab entre le rendu de la partie visible de l'image (couche texte comprise) et la même
+    partie de l'image source réduite (une image décalée pour centrer le contenu peut déborder de la page)."""
     import cv2
     import pymupdf
 
-    zoom = COLOR_CHECK_SIDE / max(area.width, area.height)
-    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False, clip=area)
+    visible = area & page.rect
+    zoom = COLOR_CHECK_SIDE / max(visible.width, visible.height)
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False, clip=visible)
     rendered = np.frombuffer(pixmap.samples, np.uint8).reshape(pixmap.height, pixmap.width, 3)
     with Image.open(io.BytesIO(image_bytes)) as image:
-        source = np.asarray(image.convert("RGB").resize((pixmap.width, pixmap.height), Image.Resampling.BOX))
+        width, height = image.size
+        crop = ((visible.x0 - area.x0) / area.width * width, (visible.y0 - area.y0) / area.height * height,
+                (visible.x1 - area.x0) / area.width * width, (visible.y1 - area.y0) / area.height * height)
+        source = np.asarray(image.convert("RGB").crop(tuple(round(v) for v in crop)).resize(
+            (pixmap.width, pixmap.height), Image.Resampling.BOX))
     lab_rendered = cv2.cvtColor(rendered.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
     lab_source = cv2.cvtColor(source.astype(np.float32) / 255.0, cv2.COLOR_RGB2Lab)
     return float(np.linalg.norm(lab_rendered - lab_source, axis=2).mean())

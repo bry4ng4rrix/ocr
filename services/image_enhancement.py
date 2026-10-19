@@ -56,7 +56,12 @@ COLORFUL_PAGE = 15.0              # indice de Hasler : page colorée, aucune cor
 PAPER_MIN = 90.0                  # en dessous, la page n'a pas de papier clair (couverture, aplat sombre)
 PAPER_WHITE = 240.0               # clarté visée par le nettoyage du fond (texture du papier gardée)
 MAX_WHITENING_GAIN = 2.5
-WHITEN_BELOW = 222.0              # papier plus sombre : nettoyage du fond proposé
+WHITEN_BELOW = 222.0
+BG_INK = 0.62                     # clarté relative au papier sous laquelle un pixel est de l'encre (gardé)
+BG_PAPER = 0.88                   # au-dessus : papier, mis en blanc (entre les deux : transition douce)
+FRAME_MIN_SHARE = 0.03            # rectangle encadré protégé : 3 % à 85 % de la page
+FRAME_MAX_SHARE = 0.85
+FRAME_RECTANGULARITY = 0.85              # papier plus sombre : nettoyage du fond proposé
 COLORFUL_PAPER_MIN = 130.0        # page colorée : gain seulement si un vrai papier clair est mesuré
 EDGE_STRIP_MIN = 0.001            # bande de fond à rogner (fraction du côté)
 EDGE_STRIP_MAX = 0.08             # bande plus large : contour douteux, vérification plutôt que rognage
@@ -104,6 +109,67 @@ def whiten_paper(rgb: np.ndarray, strength: float) -> np.ndarray:
     return out.astype(np.uint8)
 
 
+def _framed_rectangles(small: np.ndarray) -> np.ndarray:
+    """Rectangles encadrés (reproductions, manuscrits, tableaux-images) : bords nets, forme rectangulaire.
+
+    Une reproduction de document a souvent la couleur du papier : la détection des photos par la couleur
+    ne la voit pas, son cadre droit si. Retourne un masque bool de la taille de `small`.
+    """
+    height, width = small.shape[:2]
+    gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), (5, 5), 0)
+    edges = cv2.dilate(cv2.Canny(gray, 30, 90), np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    mask = np.zeros((height, width), np.uint8)
+    page_area = float(height * width)
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if not FRAME_MIN_SHARE * page_area <= area <= FRAME_MAX_SHARE * page_area:
+            continue
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        (_, _), (rect_w, rect_h), _ = cv2.minAreaRect(contour)
+        if len(approx) == 4 and cv2.isContourConvex(approx) and area >= FRAME_RECTANGULARITY * rect_w * rect_h:
+            cv2.drawContours(mask, [approx], -1, 1, thickness=cv2.FILLED)
+    return mask.astype(bool)
+
+
+def image_regions(rgb: np.ndarray, max_side: int = 900) -> np.ndarray:
+    """Zones à protéger lors de la suppression du fond (bool, taille de `rgb`) : photos, illustrations, aplats
+    colorés (image_service.picture_mask) et rectangles encadrés."""
+    small, scale = image_service.downscale(rgb, max_side)
+    mask = image_service.picture_mask(small) | _framed_rectangles(small)
+    if scale >= 1.0:
+        return mask
+    return cv2.resize(mask.astype(np.uint8), (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+
+def remove_background(rgb: np.ndarray, strength: float = 100.0) -> np.ndarray:
+    """Suppression du fond : le papier devient blanc pur, le texte garde sa forme et sa couleur, les images
+    (photos, illustrations, encadrés) sont conservées, seulement éclaircies comme le papier voisin.
+
+    1. éclairage égalisé : division par le fond du papier estimé (même calcul que whiten_paper) ;
+    2. hors images : rampe douce entre « encre » (clarté relative ≤ BG_INK) et « papier » (≥ BG_PAPER) vers
+       le blanc — pas de seuillage, les contours des lettres restent lissés ;
+    3. images : version simplement éclaircie, raccord progressif (masque adouci) ;
+    4. `strength` mélange avec le simple nettoyage du fond (0 = whiten_paper seul).
+    """
+    strength = float(np.clip(strength / 100.0, 0.0, 1.0))
+    background = image_service.paper_background(rgb)
+    gain = np.clip(1.0 / background, 1.0 / MAX_WHITENING_GAIN, MAX_WHITENING_GAIN).astype(np.float32)
+    relative = rgb.astype(np.float32) * gain[..., None] / 255.0          # papier ≈ 1.0
+    lightness = relative @ np.array([0.299, 0.587, 0.114], np.float32)
+    ramp = np.clip((lightness - BG_INK) / (BG_PAPER - BG_INK), 0.0, 1.0)
+    ramp = ramp * ramp * (3.0 - 2.0 * ramp)                              # transition douce (smoothstep)
+    paper_white = PAPER_WHITE / 255.0
+    whitened = np.clip(relative * paper_white, 0.0, 1.0)
+    cleaned = np.clip(relative, 0.0, 1.0) * (1.0 - ramp[..., None]) + ramp[..., None]
+    protect = image_regions(rgb).astype(np.float32)
+    feather = max(1.0, max(rgb.shape[:2]) / 400.0)
+    protect = np.clip(cv2.GaussianBlur(cv2.dilate(protect, np.ones((3, 3), np.uint8)), (0, 0), feather) * 1.5, 0, 1)
+    mixed = whitened * protect[..., None] + cleaned * (1.0 - protect[..., None])
+    out = whitened * (1.0 - strength) + mixed * strength
+    return np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
 def _exposure(rgb: np.ndarray, exposure: float) -> np.ndarray:
     """Gain de clarté 2^(exposure/50) appliqué aux trois canaux (teinte conservée), écrêté à 255."""
     gain = 2.0 ** (exposure / 50.0)
@@ -130,7 +196,9 @@ def apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarr
     if adjustments.is_neutral():
         return rgb.copy()
     out = crop_edges(rgb, adjustments) if adjustments.has_crop else rgb
-    if adjustments.paper_whitening:
+    if adjustments.background_removal:
+        out = remove_background(out, adjustments.background_removal)
+    elif adjustments.paper_whitening:
         out = whiten_paper(out, adjustments.paper_whitening)
     shadows = ImageEnhancement(enabled=True, white_balance="auto" if adjustments.white_balance else "none",
                                shadow_correction=adjustments.shadow_correction, contrast=adjustments.contrast)
@@ -147,9 +215,11 @@ def apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarr
     return out.copy() if out is rgb else out
 
 
-def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = None) -> AdjustmentPlan:
+def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = None, *,
+                     remove_background: bool = False) -> AdjustmentPlan:
     """Plan déterministe à partir des mesures, éventuellement guidé par l'analyse Gemma.
 
+    remove_background : le fond du papier est supprimé (réglage du livre) au lieu d'être seulement éclairci.
     Sans analyse : seuils stricts. Avec analyse : une action proposée n'est retenue que si une mesure la
     confirme (seuils plus souples) ; sinon elle est rejetée avec sa raison. Les actions géométriques ne
     règlent rien ici : elles demandent une vérification si OpenCV ne les a pas déjà traitées.
@@ -191,7 +261,12 @@ def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = No
     uneven = metrics.illumination_unevenness > (CONFIRM_UNEVENNESS if shadow_proposed else STRICT_UNEVENNESS)
     gray = metrics.paper_level < WHITEN_BELOW
     dark_proposed = analysis is not None and analysis.lighting_issue == LightingIssue.UNDEREXPOSED
-    if has_paper and (uneven or gray):
+    if has_paper and remove_background:
+        if uneven:
+            actions.append(ScanAction.SHADOW_CORRECTION)
+        keep(ScanAction.LIGHTING_CORRECTION, "Fond supprimé (papier blanc), texte et images conservés.",
+             background_removal=100.0)
+    elif has_paper and (uneven or gray):
         detail = []
         if uneven:
             detail.append(f"éclairage irrégulier {metrics.illumination_unevenness:.2f}")
@@ -214,7 +289,7 @@ def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = No
     # Contraste (étendue tonale de l'intérieur de la page)
     contrast_proposed = ScanAction.CONTRAST_ADJUSTMENT in proposed or (
         analysis is not None and analysis.contrast_level == ContrastLevel.LOW)
-    whitened = bool(values.get("paper_whitening"))
+    whitened = bool(values.get("paper_whitening") or values.get("background_removal"))
     # Après nettoyage du fond, l'étendue tonale grandit avec le gain du papier : on juge celle attendue, et
     # seul le contraste local (qui protège le papier) est ajouté, sinon le papier déjà clair serait brûlé.
     expected_range = metrics.tonal_range * (min(MAX_WHITENING_GAIN, PAPER_WHITE / max(metrics.paper_level, 1.0))

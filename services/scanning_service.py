@@ -27,7 +27,7 @@ from models.errors import BookOcrError, ExportError, ProcessingError
 from models.geometry import Point
 from models.reports import Issue, Severity
 from models.scanning import (AdjustmentPlan, AdjustmentSource, AnalysisRecord, OrientationIssue, QualityCheck,
-                             ScanAdjustments, ScanPageRecord, ScanState, SearchablePageInput, SearchablePdfReport,
+                             ScanAdjustments, ScanBookSettings, ScanPageRecord, ScanState, SearchablePageInput, SearchablePdfReport,
                              SearchablePdfValidation, utc_now)
 from repositories import scan_repository
 from services import (export_service, image_analysis_service, image_enhancement, image_quality_service,
@@ -165,6 +165,30 @@ def import_book_folder(project: Project, folder: str | Path):
     return report
 
 
+# --------------------------------------------------------------------------- réglages du livre
+
+
+def load_book_settings(project: Project) -> ScanBookSettings:
+    path = project_service.project_dir(project) / "scan" / "settings.json"
+    if path.is_file():
+        try:
+            return ScanBookSettings.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            logger.warning("Réglages de numérisation illisibles (%s) : valeurs par défaut", type(error).__name__)
+    return ScanBookSettings()
+
+
+def save_book_settings(project: Project, settings: ScanBookSettings) -> None:
+    _atomic_write_bytes(project_service.project_dir(project) / "scan" / "settings.json",
+                        settings.model_dump_json(indent=1).encode("utf-8"))
+
+
+def requeue_book(project: Project) -> int:
+    """Remet toutes les pages en file (après un changement des réglages du livre) ; réglages manuels gardés."""
+    sync_queue(project)
+    return scan_repository.mark_pending(project.id, [page.id for page in project.pages], reset_attempts=True)
+
+
 # --------------------------------------------------------------------------- file
 
 
@@ -228,15 +252,16 @@ def analyse(project: Project, page_id: str, force: bool = False) -> ScanPageReco
     record.analysis = image_analysis_service.analyse_page(straightened, analysis_cache_dir(project), force=force)
     record.timings_s["analysis"] = round(time.monotonic() - started, 2)
     metrics = image_quality_service.measure(straightened)
-    record.proposed_plan = _proposal(metrics, record.analysis)
+    record.proposed_plan = _proposal(metrics, record.analysis, load_book_settings(project))
     save_record(project, record)
     return record
 
 
-def _proposal(metrics, analysis: AnalysisRecord | None) -> AdjustmentPlan | None:
+def _proposal(metrics, analysis: AnalysisRecord | None, settings: ScanBookSettings) -> AdjustmentPlan | None:
     if analysis is None or not analysis.usable:
         return None
-    return image_enhancement.plan_adjustments(metrics, analysis.analysis)
+    return image_enhancement.plan_adjustments(metrics, analysis.analysis,
+                                              remove_background=settings.remove_background)
 
 
 def _render(project: Project, page: Page, record: ScanPageRecord, straightened: np.ndarray,
@@ -246,7 +271,11 @@ def _render(project: Project, page: Page, record: ScanPageRecord, straightened: 
     if adjustments != record.adjustments or source != record.adjustments_source:
         record.remember(source, adjustments)
     enhanced = image_enhancement.apply_adjustments(straightened, adjustments)
-    check = image_quality_service.compare(straightened, enhanced, metrics)
+    removed = adjustments.background_removal > 0
+    # Le contrôle compare des images de même cadrage : la page redressée rognée comme l'image améliorée.
+    reference = image_enhancement.crop_edges(straightened, adjustments) if adjustments.has_crop else straightened
+    check = image_quality_service.compare(reference, enhanced, None if adjustments.has_crop else metrics,
+                                          background_removed=removed)
     final, final_source = enhanced, "enhanced"
     if check.enhancement_degraded:
         cropped = image_enhancement.crop_edges(straightened, adjustments) if adjustments.has_crop else straightened
@@ -259,6 +288,8 @@ def _render(project: Project, page: Page, record: ScanPageRecord, straightened: 
     record.final_signature = final_signature(page, adjustments)
     record.straightened_file = _relative(project, project_service.page_paths(project, page).corrected)
     record.quality = check
+    # Bloc de contenu à centrer dans le PDF : seulement sur fond blanc (sinon le bord de la photo se verrait).
+    record.content_box = image_quality_service.content_box(final) if removed and final_source == "enhanced" else None
     record.timings_s["render"] = round(time.monotonic() - started, 2)
     return final
 
@@ -336,8 +367,9 @@ def process_page(project: Project, page_id: str, *, use_ai: bool | None = None, 
                 straightened, analysis_cache_dir(project), force=reanalyse)
             record.timings_s["analysis"] = round(time.monotonic() - started, 2)
             save_record(project, record)
-        measured = image_enhancement.plan_adjustments(metrics, None)
-        combined = _proposal(metrics, record.analysis if use_ai else None)
+        settings = load_book_settings(project)
+        measured = image_enhancement.plan_adjustments(metrics, None, remove_background=settings.remove_background)
+        combined = _proposal(metrics, record.analysis if use_ai else None, settings)
         if record.adjustments_source == "manual":
             plan, adjustments, source = None, record.adjustments, "manual"
         elif auto_apply and combined is not None:
@@ -379,7 +411,9 @@ def preview(project: Project, page_id: str, adjustments: ScanAdjustments,
     page = project.page(page_id)
     straightened = image_service.downscale(load_straightened(project, page), max_side)[0]
     enhanced = image_enhancement.apply_adjustments(straightened, adjustments)
-    return straightened, enhanced, image_quality_service.compare(straightened, enhanced)
+    reference = image_enhancement.crop_edges(straightened, adjustments) if adjustments.has_crop else straightened
+    return straightened, enhanced, image_quality_service.compare(
+        reference, enhanced, background_removed=adjustments.background_removal > 0)
 
 
 def render_final(project: Project, page_id: str, adjustments: ScanAdjustments,
@@ -403,7 +437,8 @@ def auto_enhance(project: Project, page_id: str) -> ScanPageRecord:
     """« Améliorer automatiquement » : plan mesuré (sans Gemma), appliqué en pleine résolution."""
     page = project.page(page_id)
     metrics = image_quality_service.measure(load_straightened(project, page))
-    plan = image_enhancement.plan_adjustments(metrics, None)
+    plan = image_enhancement.plan_adjustments(metrics, None,
+                                              remove_background=load_book_settings(project).remove_background)
     record = render_final(project, page_id, plan.adjustments, source=plan.source)
     record.applied_plan = plan
     save_record(project, record)
@@ -504,8 +539,12 @@ def validate_page(project: Project, page_id: str, validated: bool = True) -> Sca
 # --------------------------------------------------------------------------- export
 
 
-def export_inputs(project: Project, *, include_unvalidated: bool = True) -> tuple[list[SearchablePageInput], list[str]]:
-    """Pages dans l'ordre du livre ; problèmes bloquants (page non traitée, à vérifier non validée)."""
+def export_inputs(project: Project, *, include_unvalidated: bool = True,
+                  center_content: bool = True) -> tuple[list[SearchablePageInput], list[str]]:
+    """Pages dans l'ordre du livre ; problèmes bloquants (page non traitée, à vérifier non validée).
+
+    center_content : le bloc de contenu des pages à fond supprimé est transmis pour être centré dans le PDF.
+    """
     inputs: list[SearchablePageInput] = []
     problems: list[str] = []
     for number, page in enumerate(project.pages, start=1):
@@ -518,19 +557,24 @@ def export_inputs(project: Project, *, include_unvalidated: bool = True) -> tupl
             continue
         inputs.append(SearchablePageInput(page_id=page.id, label=f"{number}",
                                           image_path=str(_absolute(project, record.final_file or "")),
-                                          ocr_path=str(_absolute(project, record.ocr_file or ""))))
+                                          ocr_path=str(_absolute(project, record.ocr_file or "")),
+                                          content_box=record.content_box if center_content else None))
     return inputs, problems
 
 
-def export_book_pdf(project: Project, *, include_unvalidated: bool = True,
-                    uniform: bool = True) -> tuple[SearchablePdfReport, SearchablePdfValidation]:
+def export_book_pdf(project: Project, *, include_unvalidated: bool = True, uniform: bool = True,
+                    center_content: bool | None = None) -> tuple[SearchablePdfReport, SearchablePdfValidation]:
     """Un PDF pour le livre : toutes les pages, dans l'ordre, sinon rien. Rapport de validation écrit à côté.
 
-    uniform=True : pages PDF de même format, chaque page photographiée centrée (marge blanche).
+    uniform=True : pages PDF de même format, chaque page centrée (marge blanche). center_content (défaut :
+    réglage du livre) : sur les pages à fond supprimé, c'est le bloc de texte et d'images qui est centré.
     """
+    if center_content is None:
+        center_content = load_book_settings(project).center_content
     if not project.pages:
         raise ExportError("Le livre ne contient aucune page.")
-    inputs, problems = export_inputs(project, include_unvalidated=include_unvalidated)
+    inputs, problems = export_inputs(project, include_unvalidated=include_unvalidated,
+                                     center_content=center_content and uniform)
     if problems:
         shown = " ".join(problems[:5]) + (f" (+{len(problems) - 5} autres)" if len(problems) > 5 else "")
         raise ExportError("Export impossible : toutes les pages doivent être prêtes. " + shown)
@@ -571,6 +615,7 @@ def book_overview(project: Project) -> list[dict]:
 
 
 _ADJUSTMENT_LABELS = {
+    "background_removal": "Fond supprimé (papier blanc), images conservées",
     "paper_whitening": "Fond nettoyé (papier éclairci et uniformisé)",
     "shadow_correction": "Ombres atténuées",
     "local_contrast": "Contraste local renforcé",

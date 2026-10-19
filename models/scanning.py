@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from models.geometry import Box
 from models.reports import Issue
 
 ANALYSIS_REASON_MAX = 400
@@ -177,6 +178,7 @@ class ScanAdjustments(BaseModel):
     """
 
     paper_whitening: float = Field(default=0.0, ge=0, le=100)     # fond du papier uniformisé et blanchi
+    background_removal: float = Field(default=0.0, ge=0, le=100)  # fond supprimé (blanc), images conservées
     exposure: float = Field(default=0.0, ge=-30, le=40)
     brightness: float = Field(default=0.0, ge=-50, le=50)
     contrast: float = Field(default=0.0, ge=-50, le=50)
@@ -265,6 +267,13 @@ class QualityCheck(BaseModel):
 FinalSource = Literal["enhanced", "straightened"]
 
 
+class ScanBookSettings(BaseModel):
+    """Réglages de numérisation d'un livre (data/projects/<id>/scan/settings.json)."""
+
+    remove_background: bool = True      # fond du papier supprimé (blanc), images conservées
+    center_content: bool = True         # dans le PDF, le bloc de contenu est centré sur la page
+
+
 class ScanPageRecord(BaseModel):
     """Résultats et paramètres d'une page (data/projects/<id>/scan/<page_id>/record.json).
 
@@ -289,6 +298,7 @@ class ScanPageRecord(BaseModel):
     ocr_file: str | None = None                      # scan/<page>/ocr.json (coordonnées sur final.jpg)
     ocr_signature: str | None = None                 # final_signature au moment de l'OCR
     quality: QualityCheck | None = None
+    content_box: Box | None = None                   # bloc de contenu (texte + images) sur final.jpg, fond exclu
     review_reasons: list[str] = Field(default_factory=list)
     validated: bool = False                          # validation explicite par l'utilisateur
     error: str | None = None
@@ -313,6 +323,7 @@ class SearchablePageInput(BaseModel):
     label: str = ""
     image_path: str
     ocr_path: str | None = None        # OcrResult JSON (models.ocr) ; None = page sans couche texte
+    content_box: Box | None = None     # bloc de contenu à centrer (format uniforme, fond blanc) ; None = image entière
 
 
 class ProbeResult(BaseModel):
