@@ -281,6 +281,11 @@ def _store_page(project: Project, page: Page) -> None:
             project.pages[index] = page
 
 
+def store_page(project: Project, page: Page) -> None:
+    """Enregistre une page traitée hors de ce module (numérisation) avec les mêmes garanties que le lot."""
+    _store_page(project, page)
+
+
 def process_pages(project: Project, page_ids: list[str] | None, steps: Iterable[Step],
                   progress: Callable[[ProgressEvent], None] | None = None,
                   cancel: threading.Event | None = None, redetect: bool = False) -> ProcessingReport:

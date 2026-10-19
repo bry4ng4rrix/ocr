@@ -8,6 +8,7 @@ import numpy as np
 import streamlit as st
 
 from services import image_service, image_enhancement, ollama_vision, page_detection, pdf_export
+from models.errors import BookOcrError
 
 
 def _init() -> None:
@@ -38,14 +39,14 @@ def _load_files(files, dpi: int) -> list[dict]:
 def _render_detection(page: dict, source_index: int, split: float) -> None:
     candidates = page_detection.detect_pages(page["original"])
     if len(candidates) == 2:
-        halves = page_detection.split_spread(page["original"], split)
-        source = page["original"]
+        physical_pages = [page_detection.warp_page(page["original"], candidate.corners)
+                          for candidate in candidates]
         # Replace the current source entry with independent physical pages.
         pages = st.session_state.scan_pages
         position = next(i for i, value in enumerate(pages) if value["id"] == page["id"])
-        left = _add_page(halves[0], page["source"], page["source_order"], page["source_index"],
+        left = _add_page(physical_pages[0], page["source"], page["source_order"], page["source_index"],
                          confidence=candidates[0].confidence, warning=candidates[0].warning)
-        right = _add_page(halves[1], page["source"], page["source_order"], page["source_index"],
+        right = _add_page(physical_pages[1], page["source"], page["source_order"], page["source_index"],
                           confidence=candidates[1].confidence, warning=candidates[1].warning)
         pages[position:position+1] = [left, right]
         return
@@ -63,6 +64,7 @@ st.caption("Chaque page physique validée devient une feuille image distincte da
 
 with st.expander("Ollama et Gemma 3:4b", expanded=False):
     st.caption("Analyse locale facultative. Les images ne sont envoyées qu’au serveur Ollama configuré.")
+    ai_enabled = st.checkbox("Activer l’analyse IA à la demande", value=False, key="scan_ai_enabled")
     if st.button("Tester la connexion Ollama", key="scan_ollama_test"):
         try:
             st.success(ollama_vision.test_connection())
@@ -83,7 +85,7 @@ with uploader_col:
             with st.spinner("Lecture progressive des fichiers…"):
                 st.session_state.scan_pages.extend(_load_files(uploads, dpi))
             st.success("Import terminé.")
-        except (ValueError, OSError, RuntimeError) as error:
+        except (BookOcrError, ValueError, OSError, RuntimeError) as error:
             st.error(f"Import impossible : {error}")
 
 pages: list[dict] = st.session_state.scan_pages
@@ -148,13 +150,23 @@ if pages:
     if st.button("Supprimer cette page", disabled=not remove, key=f"delete_{page['id']}"):
         st.session_state.scan_pages = [p for p in pages if p["id"] != selected_id]
         st.rerun()
-    if st.button("Analyser avec Gemma", key=f"gemma_{page['id']}"):
+    if st.button("Analyser avec Gemma", disabled=not st.session_state.get("scan_ai_enabled", False),
+                 key=f"gemma_{page['id']}"):
         try:
             from services.image_service import encode_png
             page["advice"] = ollama_vision.analyze(encode_png(current))
             st.json(page["advice"].model_dump())
         except (OSError, RuntimeError, ValueError) as error:
             st.error(str(error))
+    advice = page.get("advice")
+    if advice is not None:
+        st.json(advice.model_dump())
+        if st.button("Appliquer les recommandations", key=f"apply_advice_{page['id']}"):
+            from models.page import ImageEnhancement
+            base = page["crop"] if page["crop"] is not None else page["original"]
+            settings = ImageEnhancement(white_balance="auto", shadow_correction=advice.shadows,
+                contrast=advice.contrast, brightness=advice.brightness, sharpness=advice.sharpness)
+            page["enhanced"] = image_service.enhance(base, settings)
 
     order_rows = [{"id": p["id"], "ordre": index, "source": p["source"],
                    "validée": p["validated"]} for index, p in enumerate(pages, 1)]

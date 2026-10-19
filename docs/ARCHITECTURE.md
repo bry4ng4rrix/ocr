@@ -277,3 +277,106 @@ missing_glyphs(family: str, text: str) -> set[str]
 ## 7. Traitement long et interface
 
 Le traitement par lots s'exécute dans un thread d'arrière-plan (`processing_service.start_background_job`) qui enregistre le projet après chaque page et l'avancement dans `job.json`. L'interface lit cet état avec un fragment Streamlit rafraîchi périodiquement : elle reste utilisable, et un redémarrage de Streamlit ne perd que la page en cours de calcul.
+
+## 8. Numérisation intelligente (PDF fidèle recherchable, Gemma 3 facultatif) — contrat v1, 19/10/2026
+
+Objectif : un **PDF par livre** dont le contenu visible est la **photographie traitée** (couleurs conservées, jamais une image générée) avec une **couche OCR invisible** alignée mot par mot. Ce module est séparé de la reconstruction DOCX ; il réutilise le projet (`project_service` : originaux SHA-256, ordre des pages), la géométrie (`orientation_service.correct_page` via `processing_service.run_geometry`, qui écrit `corrected/<page>.png`), les réglages (`image_service.enhance`) et l'OCR (`ocr_service.run_ocr`). Modèles : `models/scanning.py` (fait foi).
+
+```
+original (EXIF) ─► run_geometry (OpenCV : feuille validée, perspective, quart de tour OSD, inclinaison) ─► corrected/<p>.png
+                         │
+                         ├─► copie réduite 896 px ─► Gemma 3 (Ollama, facultatif, cache) ─► VisualAnalysis (validée)
+                         ▼
+          mesures ImageMetrics ─► plan_adjustments(mesures, analyse) ─► ScanAdjustments (bornés)
+                         ▼
+          apply_adjustments ─► contrôle avant/après (QualityCheck) ─► scan/<p>/final.jpg (ou page redressée si dégradée)
+                         ▼
+          prepare_ocr_image + Tesseract (cache) ─► scan/<p>/ocr.json (mots, boîtes normalisées sur final.jpg)
+                         ▼
+          build_searchable_pdf (une page = final.jpg inséré sans recompression + mots en rendu 3) ─► validation + rapport JSON
+```
+
+### 8.1 Fichiers
+
+```
+data/projects/<id>/scan/<page_id>/record.json   ScanPageRecord (réglages, historique, analyse, mesures, chemins)
+data/projects/<id>/scan/<page_id>/final.jpg     image finale couleur (seul encodage JPEG, qualité 92, 4:4:4)
+data/projects/<id>/scan/<page_id>/ocr.json      OcrResult sur final.jpg
+data/projects/<id>/scan/analysis/<clé>.json     cache AnalysisRecord (clé = sha256 image envoyée + modèle/digest + version du prompt)
+data/projects/<id>/exports/<nom>_numerisation.pdf  (+ .validation.json)
+data/bookocr.db, table scan_tasks               file persistante : état par page (PENDING … FAILED), tentatives, erreur
+```
+
+### 8.2 `ollama_service` (intégration) — transport HTTP local, aucune dépendance Streamlit
+
+```python
+status() -> OllamaStatus                       # existant : désactivé / injoignable / modèle absent / disponible
+model_details(model: str | None = None, timeout: float = 5) -> OllamaModelInfo   # /api/show : digest, capacités (vision)
+chat_json(prompt: str, image_jpeg: bytes, schema: dict, *, model: str | None = None,
+          timeout: float | None = None, retries: int | None = None) -> OllamaChatResult
+    # POST /api/chat, images base64, format = schéma JSON, temperature 0, stream False.
+    # Sémaphore global OLLAMA_MAX_PARALLEL_REQUESTS ; nouvelles tentatives bornées (OLLAMA_MAX_RETRIES)
+    # seulement sur délai dépassé / erreur réseau / HTTP 5xx. Lève AiUnavailableError (désactivé, injoignable,
+    # modèle absent, HTTP 4xx), AiTimeoutError, AiResponseError (JSON absent ou illisible). Ne télécharge jamais.
+```
+
+### 8.3 `image_analysis_service` (intégration) — Gemma comme assistant d'analyse uniquement
+
+```python
+PROMPT_VERSION: str
+analysis_image(rgb: np.ndarray, max_side: int = config.OLLAMA_ANALYSIS_MAX_SIDE) -> bytes   # JPEG réduit, copie
+analyse_page(rgb: np.ndarray, cache_dir: Path, *, force: bool = False) -> AnalysisRecord
+    # cache par empreinte ; ne lève pas : statut "disabled" / "unavailable" / "timeout" / "invalid_response" / "error"
+    # avec message ; le pipeline continue sans IA.
+```
+
+### 8.4 `image_quality_service` (OCR et image) — mesures, aucune décision IA
+
+```python
+measure(rgb: np.ndarray) -> ImageMetrics
+compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics | None = None) -> QualityCheck
+    # passed=False et enhancement_degraded=True si l'amélioration dégrade : netteté effondrée, écrêtage accru,
+    # dérive de couleur (ΔE) excessive, contraste effondré. Les scores ne suffisent pas à « prouver » un gain.
+```
+
+### 8.5 `image_enhancement` (OCR et image) — transformations OpenCV/Pillow déterministes
+
+```python
+apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray
+    # copie ; neutre = identité ; réutilise image_service.enhance ; jamais de binarisation ni de passage en gris
+plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = None) -> AdjustmentPlan
+    # chaque action de Gemma n'est retenue que si une mesure la confirme ; sans analyse : mesures seules
+    # (seuils plus stricts). Page correcte : plan neutre. ROTATE / PERSPECTIVE / DETECT_PAGE ne règlent rien
+    # ici : ils deviennent des motifs de vérification (review_required) si la géométrie OpenCV ne les confirme pas.
+crop_inset(rgb: np.ndarray, fraction: float) -> np.ndarray
+```
+
+### 8.6 `pdf_export` (DOCX et PDF) — PDF fidèle recherchable
+
+```python
+build_searchable_pdf(pages: list[SearchablePageInput], output: Path, dpi: int = config.SCAN_PDF_DPI) -> SearchablePdfReport
+    # une page PDF par entrée, dans l'ordre ; taille = pixels × 72 / dpi ; JPEG inséré tel quel (pas de
+    # recompression, pas de rotation : le JPEG n'a pas d'EXIF) ; chaque mot OCR écrit en rendu 3 (invisible),
+    # étiré horizontalement à la largeur de sa boîte ; aucun texte blanc ; écriture atomique.
+validate_searchable_pdf(path: Path, pages: list[SearchablePageInput], probes_per_page: int = 3) -> SearchablePdfValidation
+    # nombre de pages, texte extractible, couche texte 100 % invisible, recherche de mots OCR connus,
+    # flux image identique au JPEG, écart de couleur rendu/final.
+```
+
+### 8.7 `scanning_service` (intégration) et `scan_repository`, `workers/scan_runner`
+
+```python
+sync_queue(project: Project) -> None                     # une ligne scan_tasks par page, ordre = Project.pages
+load_record(project, page) -> ScanPageRecord ; save_record(project, record) -> None   # écriture atomique
+analyse(project, page_id, force: bool = False) -> ScanPageRecord          # Gemma sur la page redressée
+process_page(project, page_id, *, use_ai: bool | None = None, auto_apply: bool | None = None) -> ScanPageRecord
+    # géométrie -> (analyse) -> plan -> rendu final -> contrôle -> OCR ; état COMPLETED / REVIEW_REQUIRED / FAILED
+render_final(project, page_id, adjustments: ScanAdjustments, source: str = "manual") -> ScanPageRecord
+apply_proposal(project, page_id) -> ScanPageRecord ; restore_previous(project, page_id) ; reset_to_original(project, page_id)
+set_manual_quad(project, page_id, corners) -> ScanPageRecord                # recadrage manuel validé géométriquement
+validate_page(project, page_id, validated: bool = True) -> ScanPageRecord
+export_book_pdf(project, *, require_validation: bool = False) -> tuple[SearchablePdfReport, SearchablePdfValidation]
+scan_runner.start(project_id, page_ids | None, retry_failed: bool = False) ; cancel(project_id) ; is_running(project_id)
+```
+
+Règles : Gemma ne fixe jamais de coordonnées ni de rotation ; une orientation incertaine (OSD) ou contredite par Gemma passe la page en `REVIEW_REQUIRED` sans rotation ; `OLLAMA_AUTO_APPLY=false` (défaut) : le traitement applique le plan **mesuré** et range le plan Gemma dans `proposed_plan` (aperçu puis validation) ; `true` : le plan combiné est appliqué, les incertitudes passent en vérification. Les originaux ne sont jamais réécrits ; chaque réglage est un paramètre rejoué depuis la page redressée.

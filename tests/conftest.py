@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+os.environ.setdefault("BOOKOCR_SKIP_DOTENV", "1")   # un .env local ne doit pas changer les tests
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

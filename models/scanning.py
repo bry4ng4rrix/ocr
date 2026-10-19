@@ -1,0 +1,344 @@
+"""Numérisation fidèle (« Numérisation intelligente ») : contrat de l'analyse Gemma, réglages, mesures et rapports.
+
+Le PDF de numérisation montre la photographie traitée (jamais une image générée) avec une couche OCR invisible.
+Gemma ne fait que proposer : ses réponses sont validées par ces modèles (catégories bornées, liste blanche
+d'actions, champs inconnus refusés) puis confrontées aux mesures OpenCV avant toute application.
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from models.reports import Issue
+
+ANALYSIS_REASON_MAX = 400
+HISTORY_MAX = 30
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# --------------------------------------------------------------------------- file de traitement
+
+
+class ScanState(StrEnum):
+    """État d'une page dans la file persistante (repositories/scan_repository)."""
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    FAILED = "FAILED"
+
+
+# --------------------------------------------------------------------------- contrat Gemma
+
+
+class ScanAction(StrEnum):
+    """Liste blanche des actions qu'une analyse peut recommander. Rien d'autre n'est accepté."""
+
+    ROTATE = "ROTATE"
+    DETECT_PAGE = "DETECT_PAGE"
+    PERSPECTIVE_CORRECTION = "PERSPECTIVE_CORRECTION"
+    SHADOW_CORRECTION = "SHADOW_CORRECTION"
+    LIGHTING_CORRECTION = "LIGHTING_CORRECTION"
+    CONTRAST_ADJUSTMENT = "CONTRAST_ADJUSTMENT"
+    DENOISE = "DENOISE"
+    SHARPEN = "SHARPEN"
+    PRESERVE_COLOR = "PRESERVE_COLOR"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+
+
+class PageType(StrEnum):
+    TEXT = "text"
+    ILLUSTRATED = "illustrated"
+    PHOTOGRAPHIC = "photographic"
+    MIXED = "mixed"
+    BLANK = "blank"
+    UNKNOWN = "unknown"
+
+
+class Level(StrEnum):
+    """Intensité d'un défaut visible ; `uncertain` = le modèle ne peut pas trancher."""
+
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNCERTAIN = "uncertain"
+
+
+class OrientationIssue(StrEnum):
+    NONE = "none"
+    ROTATED_90_CW = "rotated_90_cw"
+    ROTATED_90_CCW = "rotated_90_ccw"
+    UPSIDE_DOWN = "upside_down"
+    UNCERTAIN = "uncertain"
+
+
+class LightingIssue(StrEnum):
+    NONE = "none"
+    UNEVEN = "uneven"
+    UNDEREXPOSED = "underexposed"
+    OVEREXPOSED = "overexposed"
+    UNCERTAIN = "uncertain"
+
+
+class ContrastLevel(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    UNCERTAIN = "uncertain"
+
+
+class ColorContent(StrEnum):
+    GRAYSCALE = "grayscale"
+    LIMITED_COLOR = "limited_color"
+    FULL_COLOR = "full_color"
+    UNCERTAIN = "uncertain"
+
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+class VisualAnalysis(BaseModel):
+    """Réponse structurée attendue de Gemma 3 pour une page. Champs inconnus refusés (extra="forbid")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_type: PageType
+    orientation_issue: OrientationIssue
+    perspective_issue: Level
+    crop_issue: Level                     # bords de page visibles, fond autour, recadrage incorrect
+    shadow_level: Level
+    lighting_issue: LightingIssue
+    blur_level: Level
+    noise_level: Level
+    contrast_level: ContrastLevel
+    color_content: ColorContent
+    reflection_issue: Level
+    curvature_issue: Level
+    recommended_actions: list[ScanAction] = Field(default_factory=list, max_length=10)
+    manual_review_required: bool
+    reason: str = Field(default="", max_length=2000)
+
+    @field_validator("recommended_actions")
+    @classmethod
+    def _unique_actions(cls, value: list[ScanAction]) -> list[ScanAction]:
+        return list(dict.fromkeys(value))
+
+    @field_validator("reason")
+    @classmethod
+    def _clean_reason(cls, value: str) -> str:
+        """Texte affiché seulement (jamais interprété) : caractères de contrôle retirés, longueur bornée."""
+        return _CONTROL_CHARS.sub(" ", value).strip()[:ANALYSIS_REASON_MAX]
+
+
+AnalysisStatus = Literal["ok", "invalid_response", "unavailable", "disabled", "timeout", "error"]
+
+
+class AnalysisRecord(BaseModel):
+    """Résultat d'un appel (réussi ou non) ; mis en cache par empreinte d'image, modèle et version du prompt."""
+
+    status: AnalysisStatus
+    analysis: VisualAnalysis | None = None
+    model: str = ""
+    model_digest: str = ""
+    prompt_version: str = ""
+    image_sha256: str = ""                 # empreinte des octets réellement envoyés
+    image_width: int = 0
+    image_height: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    duration_s: float | None = None
+    attempts: int = 0
+    error: str = ""                        # message utilisateur (français), sans contenu du livre
+
+    @property
+    def usable(self) -> bool:
+        return self.status == "ok" and self.analysis is not None
+
+
+# --------------------------------------------------------------------------- réglages et plan
+
+
+class ScanAdjustments(BaseModel):
+    """Réglages photographiques non destructifs appliqués à la page redressée. Valeurs neutres = identité.
+
+    Échelles identiques à `models.page.ImageEnhancement` (−100..100 / 0..100) ; `gamma` > 1 éclaircit les
+    tons moyens ; `exposure` multiplie la clarté par 2^(exposure/50) (papier gris ramené vers le blanc).
+    `crop_*` rognent une fraction de chaque bord après redressement (bande de fond restée au bord).
+    Aucune binarisation ni conversion en gris : les couleurs de la photographie sont conservées.
+    """
+
+    exposure: float = Field(default=0.0, ge=-30, le=40)
+    brightness: float = Field(default=0.0, ge=-50, le=50)
+    contrast: float = Field(default=0.0, ge=-50, le=50)
+    gamma: float = Field(default=1.0, ge=0.5, le=2.0)
+    shadow_correction: float = Field(default=0.0, ge=0, le=80)
+    local_contrast: float = Field(default=0.0, ge=0, le=60)        # CLAHE sur la luminance (Lab L)
+    denoise: float = Field(default=0.0, ge=0, le=60)
+    sharpness: float = Field(default=0.0, ge=0, le=60)
+    white_balance: bool = False
+    crop_left: float = Field(default=0.0, ge=0.0, le=0.08)
+    crop_top: float = Field(default=0.0, ge=0.0, le=0.08)
+    crop_right: float = Field(default=0.0, ge=0.0, le=0.08)
+    crop_bottom: float = Field(default=0.0, ge=0.0, le=0.08)
+
+    @property
+    def has_crop(self) -> bool:
+        return any((self.crop_left, self.crop_top, self.crop_right, self.crop_bottom))
+
+    def is_neutral(self) -> bool:
+        return self == ScanAdjustments()
+
+
+AdjustmentSource = Literal["neutral", "measured", "gemma", "manual"]
+
+
+class AdjustmentPlan(BaseModel):
+    """Plan déterministe : chaque action retenue est justifiée par une mesure (et éventuellement par Gemma)."""
+
+    adjustments: ScanAdjustments = Field(default_factory=ScanAdjustments)
+    actions: list[ScanAction] = Field(default_factory=list)       # actions retenues (liste blanche)
+    rejected_actions: list[ScanAction] = Field(default_factory=list)   # proposées par Gemma, non confirmées
+    reasons: list[str] = Field(default_factory=list)
+    review_required: bool = False
+    source: AdjustmentSource = "measured"
+
+
+class AdjustmentHistoryEntry(BaseModel):
+    at: datetime = Field(default_factory=utc_now)
+    source: AdjustmentSource
+    adjustments: ScanAdjustments
+
+
+# --------------------------------------------------------------------------- mesures
+
+
+class ImageMetrics(BaseModel):
+    """Mesures objectives d'une image (copie réduite à 1200 px). Les mesures tonales portent sur
+    l'intérieur de la page (bandes sombres de bord exclues) pour ne pas être faussées par le fond.
+    """
+
+    width: int
+    height: int
+    sharpness: float                   # variance du Laplacien (gris)
+    contrast: float                    # écart-type de la luminance 0..255
+    brightness: float                  # luminance moyenne 0..255
+    paper_level: float = 0.0           # 90e centile de la luminance (clarté du papier)
+    tonal_range: float = 0.0           # 98e − 2e centile de la luminance
+    dark_clip: float                   # part des pixels de luminance <= 5
+    bright_clip: float                 # part des pixels de luminance >= 250
+    colorfulness: float                # indice de Hasler et Süsstrunk (0 = gris)
+    illumination_unevenness: float     # 0..1 : écart relatif du fond papier estimé (ombres, éclairage)
+    noise_sigma: float                 # bruit estimé (écart-type, niveaux de gris)
+    residual_skew_deg: float | None = None
+    skew_reliable: bool = False
+    border_content: float = 0.0        # 0..1 : part d'encre dans la bande de bord (contenu peut-être coupé)
+    dark_edges: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)   # bandes de fond (g, h, d, b), fraction
+
+
+class QualityCheck(BaseModel):
+    """Comparaison avant (page redressée) / après (page améliorée). Les scores seuls ne prouvent rien."""
+
+    before: ImageMetrics
+    after: ImageMetrics
+    color_shift: float                 # ΔE76 moyen (Lab) entre avant et après, copies réduites
+    enhancement_degraded: bool = False   # vrai : l'amélioration est écartée, la page redressée est gardée
+    passed: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    ocr_mean_confidence: float | None = None
+    ocr_word_count: int | None = None
+
+
+# --------------------------------------------------------------------------- état d'une page
+
+
+FinalSource = Literal["enhanced", "straightened"]
+
+
+class ScanPageRecord(BaseModel):
+    """Résultats et paramètres d'une page (data/projects/<id>/scan/<page_id>/record.json).
+
+    L'état de file (PENDING, …) est dans SQLite (repositories/scan_repository) ; ce fichier garde les
+    paramètres, l'historique, les mesures et les chemins (relatifs au projet) des images intermédiaires.
+    """
+
+    schema_version: int = 1
+    page_id: str
+    source_sha256: str
+    adjustments: ScanAdjustments = Field(default_factory=ScanAdjustments)
+    adjustments_source: AdjustmentSource = "neutral"
+    proposed_plan: AdjustmentPlan | None = None      # proposition (Gemma + mesures) en attente de validation
+    applied_plan: AdjustmentPlan | None = None
+    history: list[AdjustmentHistoryEntry] = Field(default_factory=list)
+    analysis: AnalysisRecord | None = None
+    geometry_issues: list[Issue] = Field(default_factory=list)
+    straightened_file: str | None = None             # corrected/<page>.png (partagé avec le pipeline DOCX)
+    final_file: str | None = None                    # scan/<page>/final.jpg (seul encodage JPEG, inséré tel quel)
+    final_source: FinalSource | None = None
+    final_signature: str | None = None               # empreinte géométrie + réglages au moment du rendu
+    ocr_file: str | None = None                      # scan/<page>/ocr.json (coordonnées sur final.jpg)
+    ocr_signature: str | None = None                 # final_signature au moment de l'OCR
+    quality: QualityCheck | None = None
+    review_reasons: list[str] = Field(default_factory=list)
+    validated: bool = False                          # validation explicite par l'utilisateur
+    error: str | None = None
+    timings_s: dict[str, float] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    def remember(self, source: AdjustmentSource, adjustments: ScanAdjustments) -> None:
+        """Applique des réglages et garde l'historique (borné) pour pouvoir revenir en arrière."""
+        self.history.append(AdjustmentHistoryEntry(source=self.adjustments_source, adjustments=self.adjustments))
+        del self.history[:-HISTORY_MAX]
+        self.adjustments = adjustments
+        self.adjustments_source = source
+
+
+# --------------------------------------------------------------------------- PDF recherchable
+
+
+class SearchablePageInput(BaseModel):
+    """Une page du PDF : image finale (JPEG, insérée sans recompression) et mots OCR sur cette image."""
+
+    page_id: str
+    label: str = ""
+    image_path: str
+    ocr_path: str | None = None        # OcrResult JSON (models.ocr) ; None = page sans couche texte
+
+
+class ProbeResult(BaseModel):
+    word: str
+    page_index: int                    # 0-based
+    found: bool
+
+
+class SearchablePdfReport(BaseModel):
+    output: str
+    page_count: int = 0
+    expected_pages: int = 0
+    words_written: int = 0
+    pages_without_text: list[int] = Field(default_factory=list)   # indices 0-based
+    file_size: int = 0
+    dpi: int = 0
+    issues: list[Issue] = Field(default_factory=list)
+
+
+class SearchablePdfValidation(BaseModel):
+    path: str
+    page_count: int = 0
+    expected_pages: int = 0
+    page_count_ok: bool = False
+    pages_with_text: int = 0
+    invisible_text_only: bool = False      # toute la couche texte est en mode de rendu 3 (invisible)
+    probes: list[ProbeResult] = Field(default_factory=list)
+    images_unrecompressed: bool = False    # le flux image du PDF est identique au JPEG final
+    max_color_delta: float | None = None   # ΔE moyen max entre le rendu PDF et l'image finale
+    passed: bool = False
+    issues: list[Issue] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)

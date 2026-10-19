@@ -73,3 +73,11 @@ class ImportPathError(BookOcrError):
 
 class AiUnavailableError(BookOcrError):
     """Ollama ou Gemini désactivé, absent, ou refusé par la confidentialité du projet."""
+
+
+class AiTimeoutError(AiUnavailableError):
+    """Délai dépassé lors d'un appel au modèle local."""
+
+
+class AiResponseError(BookOcrError):
+    """Réponse du modèle absente, mal formée ou hors du schéma attendu."""

@@ -177,6 +177,11 @@ def save_project(project: Project) -> None:
     folder = project_dir(project)
     with project_lock(project.id):
         project.updated_at = utc_now()
+        # Le dépôt SQLite attribue B aux pages non encore routées. Normaliser avant
+        # l'écriture JSON garde l'objet en mémoire et le fichier relu identiques.
+        for page in project.pages:
+            if page.route_band is None:
+                page.route_band = "B"
         text = project.model_dump_json(indent=1)
         try:
             Project.model_validate_json(text)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 
+import cv2
 import numpy as np
 import pymupdf
 import pytest
@@ -21,6 +22,16 @@ def test_manual_spread_split_returns_two_independent_pages() -> None:
     assert right.shape[1] < rgb.shape[1]
     assert left.mean(axis=(0, 1))[0] > left.mean(axis=(0, 1))[2]
     assert right.mean(axis=(0, 1))[2] > right.mean(axis=(0, 1))[0]
+
+
+def test_automatic_detection_proposes_two_physical_pages() -> None:
+    rgb = np.full((400, 800, 3), 30, dtype=np.uint8)
+    cv2.rectangle(rgb, (30, 30), (390, 370), (245, 245, 245), -1)
+    cv2.rectangle(rgb, (410, 30), (770, 370), (245, 245, 245), -1)
+    candidates = page_detection.detect_pages(rgb)
+    assert len(candidates) == 2
+    assert candidates[0].corners[0][0] < candidates[1].corners[0][0]
+    assert all("Double page" in candidate.warning for candidate in candidates)
 
 
 def test_warp_page_preserves_page_pixels_and_color() -> None:

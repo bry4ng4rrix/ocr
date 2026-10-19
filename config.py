@@ -11,6 +11,26 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 
+def _load_env_file(path: Path) -> None:
+    """Lit un fichier .env simple (CLE=valeur) sans écraser les variables déjà définies.
+
+    Ignoré si BOOKOCR_SKIP_DOTENV est défini (tests : réglages déterministes).
+    """
+    if os.environ.get("BOOKOCR_SKIP_DOTENV") or not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_env_file(BASE_DIR / ".env")
+
+
 def _int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -81,6 +101,17 @@ OLLAMA_ENABLED = _bool("OLLAMA_ENABLED", False)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "gemma3:4b")
 OLLAMA_TIMEOUT = _int("OLLAMA_TIMEOUT", 120)
+OLLAMA_MAX_RETRIES = max(0, _int("OLLAMA_MAX_RETRIES", 2))
+OLLAMA_ANALYSIS_ENABLED = _bool("OLLAMA_ANALYSIS_ENABLED", True)     # analyse visuelle Gemma (si OLLAMA_ENABLED)
+OLLAMA_AUTO_APPLY = _bool("OLLAMA_AUTO_APPLY", False)                # false : Gemma propose, l'utilisateur valide
+OLLAMA_MAX_PARALLEL_REQUESTS = max(1, _int("OLLAMA_MAX_PARALLEL_REQUESTS", 1))
+OLLAMA_ANALYSIS_MAX_SIDE = _int("OLLAMA_ANALYSIS_MAX_SIDE", 896)     # Gemma 3 voit les images en 896 × 896
+
+# Numérisation fidèle (PDF image + couche OCR invisible)
+SCAN_PDF_DPI = _int("BOOKOCR_SCAN_PDF_DPI", 300)          # taille de page PDF = pixels × 72 / dpi
+SCAN_JPEG_QUALITY = _int("BOOKOCR_SCAN_JPEG_QUALITY", 92)  # unique encodage avec perte de l'image finale
+SCAN_BATCH_SIZE = _int("BOOKOCR_SCAN_BATCH_SIZE", 10)      # pages traitées entre deux relectures du projet
+SCAN_MAX_ATTEMPTS = _int("BOOKOCR_SCAN_MAX_ATTEMPTS", 3)   # tentatives par page avant FAILED définitif
 GEMINI_ENABLED = _bool("GEMINI_ENABLED", False)
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_TIMEOUT = _int("GEMINI_TIMEOUT", 60)

@@ -42,6 +42,11 @@ def exports_dir(project: Project) -> Path:
     return folder
 
 
+def export_path(project: Project, suffix: str, label: str) -> Path:
+    """Chemin horodaté d'un nouvel export dans exports/ (nom du livre assaini)."""
+    return _filename(project, suffix, label)
+
+
 def _filename(project: Project, suffix: str, label: str) -> Path:
     safe = re.sub(r"[^\w\-]+", "_", project.name, flags=re.UNICODE).strip("_") or "livre"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

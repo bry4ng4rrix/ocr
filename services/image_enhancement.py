@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 
 from models.page import ImageEnhancement
+from models.scanning import (AdjustmentPlan, ColorContent, ContrastLevel, ImageMetrics, Level, LightingIssue,
+                             ScanAction, ScanAdjustments, VisualAnalysis)
 from services import image_service
 
 
@@ -31,3 +33,185 @@ def enhance_page(rgb: np.ndarray, mode: str = "Automatique", strength: int = 35)
         l = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l)
         result = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
     return result
+
+
+# --------------------------------------------------------------------------- numérisation fidèle
+
+# Seuils du plan sans analyse IA (stricts : on ne corrige que ce qui est nettement mesuré).
+STRICT_UNEVENNESS = 0.30          # éclairage du papier : écart relatif du fond
+STRICT_DARK = 90.0                # luminance moyenne : page sous-exposée
+STRICT_BRIGHT = 225.0             # luminance moyenne : page surexposée...
+STRICT_BRIGHT_CLIP = 0.10         # ... avec beaucoup de blancs brûlés
+STRICT_LOW_CONTRAST = 35.0        # écart-type de luminance
+STRICT_NOISE = 6.0                # écart-type du bruit
+# Seuils de confirmation d'une action proposée par Gemma (plus souples, mais toujours mesurés).
+CONFIRM_UNEVENNESS = 0.18
+CONFIRM_DARK = 120.0
+CONFIRM_LOW_CONTRAST = 50.0
+CONFIRM_NOISE = 3.5
+SHARPEN_MIN = 40.0                # sous ce Laplacien : flou fort, rien ne restaure les détails absents
+SHARPEN_MAX = 150.0               # au-dessus : déjà net, pas de renforcement
+COLORFUL_PAGE = 15.0              # indice de Hasler : page colorée, aucune correction qui atténue la couleur
+
+# Valeurs appliquées (modérées et bornées)
+SHADOW_STRENGTH_MAX = 70.0
+GAMMA_DARK = 1.25
+GAMMA_BRIGHT = 0.85
+CONTRAST_STEP = 12.0
+LOCAL_CONTRAST_STEP = 18.0
+DENOISE_STEP = 18.0
+SHARPEN_STEP = 20.0
+
+_GEOMETRY_ACTIONS = {ScanAction.ROTATE, ScanAction.DETECT_PAGE, ScanAction.PERSPECTIVE_CORRECTION,
+                     ScanAction.MANUAL_REVIEW}
+
+
+def crop_inset(rgb: np.ndarray, fraction: float) -> np.ndarray:
+    """Rogne la même fraction (0..0.08) sur chaque bord ; copie."""
+    fraction = float(np.clip(fraction, 0.0, 0.08))
+    if fraction <= 0:
+        return rgb.copy()
+    height, width = rgb.shape[:2]
+    dy, dx = round(height * fraction), round(width * fraction)
+    return rgb[dy:height - dy, dx:width - dx].copy()
+
+
+def _tone_lut(brightness: float, gamma: float) -> np.ndarray:
+    """Table 256 : gamma (> 1 éclaircit les tons moyens, noir et blanc fixes) puis décalage de luminosité."""
+    values = np.arange(256, dtype=np.float32) / 255.0
+    if gamma != 1.0:
+        values = np.power(values, 1.0 / gamma)
+    values = values * 255.0 + brightness * 1.27
+    return np.clip(values + 0.5, 0, 255).astype(np.uint8)
+
+
+def apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray:
+    """Applique les réglages à une copie de la page redressée. Neutre = copie identique.
+
+    Ordre : rognage, ombres, balance des blancs et contraste (image_service.enhance), gamma et luminosité
+    (même table sur les trois canaux : la teinte est conservée), débruitage, contraste local, netteté.
+    Jamais de binarisation ni de conversion en gris.
+    """
+    if adjustments.is_neutral():
+        return rgb.copy()
+    out = crop_inset(rgb, adjustments.crop_inset) if adjustments.crop_inset else rgb
+    shadows = ImageEnhancement(enabled=True, white_balance="auto" if adjustments.white_balance else "none",
+                               shadow_correction=adjustments.shadow_correction, contrast=adjustments.contrast)
+    if not shadows.is_neutral():
+        out = image_service.enhance(out, shadows)
+    if adjustments.gamma != 1.0 or adjustments.brightness:
+        out = cv2.LUT(out, _tone_lut(adjustments.brightness, adjustments.gamma))
+    finishing = ImageEnhancement(enabled=True, denoise=adjustments.denoise, readability=adjustments.local_contrast,
+                                 sharpness=adjustments.sharpness)
+    if not finishing.is_neutral():
+        out = image_service.enhance(out, finishing)
+    return out.copy() if out is rgb else out
+
+
+def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = None) -> AdjustmentPlan:
+    """Plan déterministe à partir des mesures, éventuellement guidé par l'analyse Gemma.
+
+    Sans analyse : seuils stricts. Avec analyse : une action proposée n'est retenue que si une mesure la
+    confirme (seuils plus souples) ; sinon elle est rejetée avec sa raison. Les actions géométriques ne
+    règlent rien ici : elles demandent une vérification si OpenCV ne les a pas déjà traitées.
+    """
+    values: dict[str, float | bool] = {}
+    actions: list[ScanAction] = []
+    rejected: list[ScanAction] = []
+    reasons: list[str] = []
+    review = False
+    proposed = set(analysis.recommended_actions) if analysis else set()
+    colorful = metrics.colorfulness > COLORFUL_PAGE or (
+        analysis is not None and analysis.color_content == ColorContent.FULL_COLOR)
+
+    def keep(action: ScanAction, reason: str, **settings: float | bool) -> None:
+        values.update(settings)
+        if action not in actions:
+            actions.append(action)
+        reasons.append(reason)
+
+    def reject(action: ScanAction, reason: str) -> None:
+        if action not in rejected:
+            rejected.append(action)
+        reasons.append(reason)
+
+    # Éclairage irrégulier et ombres
+    shadow_proposed = bool(proposed & {ScanAction.SHADOW_CORRECTION, ScanAction.LIGHTING_CORRECTION}) or (
+        analysis is not None and (analysis.shadow_level in (Level.MEDIUM, Level.HIGH)
+                                  or analysis.lighting_issue == LightingIssue.UNEVEN))
+    threshold = CONFIRM_UNEVENNESS if shadow_proposed else STRICT_UNEVENNESS
+    if metrics.illumination_unevenness > threshold:
+        strength = float(np.clip(metrics.illumination_unevenness * 150.0, 25.0, SHADOW_STRENGTH_MAX))
+        keep(ScanAction.SHADOW_CORRECTION, f"Éclairage irrégulier mesuré ({metrics.illumination_unevenness:.2f}).",
+             shadow_correction=round(strength))
+    elif shadow_proposed:
+        reject(ScanAction.SHADOW_CORRECTION, "Ombre signalée par Gemma mais non confirmée par la mesure du fond.")
+
+    # Exposition
+    dark_proposed = analysis is not None and analysis.lighting_issue == LightingIssue.UNDEREXPOSED
+    if metrics.brightness < (CONFIRM_DARK if dark_proposed else STRICT_DARK):
+        keep(ScanAction.LIGHTING_CORRECTION, f"Page sombre (luminance moyenne {metrics.brightness:.0f}).",
+             gamma=GAMMA_DARK)
+    elif metrics.brightness > STRICT_BRIGHT and metrics.bright_clip > STRICT_BRIGHT_CLIP:
+        keep(ScanAction.LIGHTING_CORRECTION, f"Page surexposée (luminance moyenne {metrics.brightness:.0f}).",
+             gamma=GAMMA_BRIGHT)
+    elif dark_proposed:
+        reject(ScanAction.LIGHTING_CORRECTION, "Sous-exposition signalée par Gemma mais non mesurée.")
+
+    # Contraste
+    contrast_proposed = ScanAction.CONTRAST_ADJUSTMENT in proposed or (
+        analysis is not None and analysis.contrast_level == ContrastLevel.LOW)
+    if metrics.contrast < (CONFIRM_LOW_CONTRAST if contrast_proposed else STRICT_LOW_CONTRAST):
+        keep(ScanAction.CONTRAST_ADJUSTMENT, f"Contraste faible mesuré ({metrics.contrast:.0f}).",
+             contrast=CONTRAST_STEP, local_contrast=LOCAL_CONTRAST_STEP)
+    elif contrast_proposed:
+        reject(ScanAction.CONTRAST_ADJUSTMENT, "Faible contraste signalé par Gemma mais non mesuré.")
+
+    # Bruit
+    noise_proposed = ScanAction.DENOISE in proposed or (
+        analysis is not None and analysis.noise_level in (Level.MEDIUM, Level.HIGH))
+    if metrics.noise_sigma > (CONFIRM_NOISE if noise_proposed else STRICT_NOISE):
+        keep(ScanAction.DENOISE, f"Bruit mesuré (σ ≈ {metrics.noise_sigma:.1f}).", denoise=DENOISE_STEP)
+    elif noise_proposed:
+        reject(ScanAction.DENOISE, "Bruit signalé par Gemma mais non mesuré.")
+
+    # Flou : netteté modérée seulement pour un flou léger, jamais de « restauration »
+    blur_proposed = ScanAction.SHARPEN in proposed or (
+        analysis is not None and analysis.blur_level in (Level.MEDIUM, Level.HIGH))
+    if metrics.sharpness < SHARPEN_MIN:
+        review = True
+        reasons.append("Page très floue : la netteté ne peut pas restaurer des détails absents ; "
+                       "une nouvelle photographie est préférable.")
+        if blur_proposed:
+            reject(ScanAction.SHARPEN, "Flou trop fort pour un renforcement de netteté.")
+    elif blur_proposed and metrics.sharpness < SHARPEN_MAX:
+        keep(ScanAction.SHARPEN, f"Flou léger confirmé (netteté {metrics.sharpness:.0f}) : renforcement modéré.",
+             sharpness=SHARPEN_STEP)
+    elif blur_proposed:
+        reject(ScanAction.SHARPEN, "Flou signalé par Gemma mais la page mesurée est nette.")
+
+    # Couleurs : rien qui les atténue (pas de balance des blancs automatique)
+    if colorful or ScanAction.PRESERVE_COLOR in proposed:
+        if ScanAction.PRESERVE_COLOR not in actions:
+            actions.append(ScanAction.PRESERVE_COLOR)
+        reasons.append("Page colorée : couleurs conservées, aucune balance des blancs automatique.")
+
+    # Géométrie et vérifications : décidées par OpenCV, jamais réglées par Gemma
+    for action in sorted(proposed & _GEOMETRY_ACTIONS):
+        review = True
+        reasons.append(f"Gemma signale « {action.value} » : vérification de la géométrie demandée.")
+    if analysis is not None:
+        if analysis.manual_review_required:
+            review = True
+            reasons.append("Gemma demande une vérification humaine.")
+        if analysis.curvature_issue == Level.HIGH:
+            review = True
+            reasons.append("Courbure forte signalée : une homographie ne la corrige pas entièrement.")
+
+    adjustments = ScanAdjustments(**values)
+    corrective = [action for action in actions if action != ScanAction.PRESERVE_COLOR]
+    source = "neutral" if not corrective else ("gemma" if analysis is not None else "measured")
+    if not corrective:
+        reasons.insert(0, "Aucune correction nécessaire : la page est gardée telle quelle.")
+    return AdjustmentPlan(adjustments=adjustments, actions=actions, rejected_actions=rejected, reasons=reasons,
+                          review_required=review, source=source)
