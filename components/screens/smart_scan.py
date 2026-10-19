@@ -2,7 +2,8 @@
 
 Déroulé : 1. choisir ou créer le livre et donner toutes ses photos ; 2. un bouton lance le traitement
 (arrière-plan) ; 3. la galerie montre chaque page avant/après et la liste des modifications faites ;
-4. retouche éventuelle d'une page ; 5. export du PDF du livre.
+4. retouche éventuelle d'une page ; 5. export du PDF du livre ; 6. statistiques des pages terminées
+(texte seul, avec image, couverture) et montants selon les prix de l'onglet « Prix ».
 
 L'écran n'appelle que des services. Gemma (Ollama) est facultatif : son état affiché vient d'un test réel,
 ses propositions ne sont appliquées qu'après aperçu (sauf OLLAMA_AUTO_APPLY). Les curseurs recalculent un
@@ -19,11 +20,12 @@ import config
 from components import common
 from models.errors import AiUnavailableError, BookOcrError
 from models.geometry import Point
-from models.scanning import (ScanAdjustments, ScanBookSettings, ScanState, SearchablePdfReport,
-                             SearchablePdfValidation)
+from models.scanning import (PAGE_KIND_LABELS, PageKind, ScanAdjustments, ScanBookSettings, ScanState,
+                             SearchablePdfReport, SearchablePdfValidation)
+from components.price_summary import price_summary
 from repositories import scan_repository
-from services import (image_analysis_service, image_service, ocr_service, ollama_service, project_service,
-                      scanning_service)
+from services import (image_analysis_service, image_service, ocr_service, ollama_service, pricing_service,
+                      project_service, scanning_service)
 from workers import scan_runner
 
 PREVIEW_SIDE = 900
@@ -301,6 +303,9 @@ def gallery() -> None:
                 st.badge(STATE_LABELS[state], color=STATE_COLORS[state])
                 if record.validated:
                     st.badge("Validée", color="green", icon=":material/check:")
+                if record.effective_kind is not None:
+                    st.badge(PAGE_KIND_LABELS[record.effective_kind], color="violet",
+                             icon=":material/edit:" if record.page_kind_override else None)
             before_col, after_col, changes_col = st.columns([1, 1, 1.2])
             page_paths = project_service.page_paths(project, page)
             original = (_cached(page_paths.thumbnail, GALLERY_SIDE) if page_paths.thumbnail.is_file()
@@ -419,6 +424,19 @@ with st.container(horizontal=True):
                  disabled=busy or not scanning_service.is_current(page, record)):
         _run("Enregistrement…", "Validation enregistrée.",
              lambda: scanning_service.validate_page(project, page.id, not record.validated))
+
+kind_options = [None, *PageKind]
+kind_choice = st.selectbox(
+    "Type de page (statistiques et prix)", kind_options,
+    index=kind_options.index(record.page_kind_override),
+    format_func=lambda kind: (f"Automatique : {PAGE_KIND_LABELS[record.page_kind]}" if record.page_kind
+                              else "Automatique (après traitement)") if kind is None else PAGE_KIND_LABELS[kind],
+    key=f"scan_kind_{page.id}", disabled=busy)
+if kind_choice != record.page_kind_override:
+    with common.user_action("Type de page enregistré.") as kind_result:
+        scanning_service.set_page_kind(project, page.id, kind_choice)
+    if kind_result.ok:
+        st.rerun()
 
 with st.expander("Orientation et recadrage manuels", icon=":material/crop_rotate:"):
     st.caption(f"Orientation automatique : {page.geometry.orientation_method or '—'}"
@@ -556,3 +574,21 @@ if last:
     if output.is_file():
         st.download_button("Télécharger le PDF", data=output.read_bytes(), file_name=output.name,
                            mime="application/pdf", icon=":material/download:")
+
+# --------------------------------------------------------------------------- 6. statistiques et prix
+
+st.subheader("6. Statistiques et prix")
+
+
+@st.fragment(run_every=10 if running else None)
+def book_totals() -> None:
+    stats = scanning_service.book_statistics(project)
+    prices = pricing_service.load_prices()
+    st.caption(f"Pages terminées : {stats.completed_pages} sur {stats.total_pages} · à vérifier : "
+               f"{stats.review_pages} · en erreur : {stats.failed_pages} · en attente : {stats.pending_pages}. "
+               "Seules les pages terminées (ou validées) sont comptées ; prix réglables dans l'onglet « Prix ».")
+    price_summary([pricing_service.estimate(stats, prices)], prices)
+
+
+book_totals()
+st.page_link(common.SCREEN_PRICING, label="Régler les prix", icon=":material/payments:")

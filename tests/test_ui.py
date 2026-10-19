@@ -27,7 +27,7 @@ pytestmark = pytest.mark.ui
 APP = str(ROOT / "app.py")
 SCREENS = [common.SCREEN_DASHBOARD, common.SCREEN_PAGES, common.SCREEN_CORRECTION, common.SCREEN_PROCESSING,
            common.SCREEN_LIVE_PREVIEW, common.SCREEN_EDITOR, common.SCREEN_TYPOGRAPHY, common.SCREEN_REVIEW,
-           common.SCREEN_EXPORT, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN]
+           common.SCREEN_EXPORT, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN, common.SCREEN_PRICING]
 TIMEOUT = 180
 
 
@@ -114,7 +114,8 @@ def analysed_project(data_dir, _analysed_template):
 @pytest.mark.parametrize("screen", SCREENS)
 def test_screen_without_project(data_dir, screen):
     at = _open(screen)
-    if screen not in {common.SCREEN_DASHBOARD, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN}:
+    if screen not in {common.SCREEN_DASHBOARD, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN,
+                      common.SCREEN_PRICING}:
         assert any("Aucun projet ouvert" in info.value for info in at.info)
 
 

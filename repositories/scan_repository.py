@@ -162,3 +162,10 @@ def progress(book_id: str | None = None, *, db_path: Path | None = None) -> Scan
         conn.close()
     counts = {ScanState(row["state"]): int(row["n"]) for row in rows}
     return ScanProgress(total=sum(counts.values()), counts=counts)
+
+
+def delete_book(book_id: str, *, db_path: Path | None = None) -> int:
+    """Retire un livre de la file (livre mis à la corbeille) ; ses fichiers ne sont pas touchés."""
+    ensure_schema(db_path)
+    with transaction(db_path) as conn:
+        return conn.execute("DELETE FROM scan_tasks WHERE book_id = ?", (book_id,)).rowcount

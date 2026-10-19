@@ -1,11 +1,12 @@
-"""Écran A — Tableau de bord : créer ou ouvrir un projet, état du livre, sauvegarde."""
+"""Écran A — Tableau de bord : projets (créer, ouvrir, modifier, supprimer, restaurer), état du livre, sauvegarde."""
 from __future__ import annotations
 
 import streamlit as st
 
 from components import common
 from models import PageStatus, Severity
-from services import ocr_service, processing_service, project_service
+from models.errors import BookOcrError
+from services import ocr_service, processing_service, project_service, scanning_service
 
 JOB_STATE_LABELS = {"running": "En cours", "done": "Terminé", "failed": "Échoué", "cancelled": "Annulé",
                     "interrupted": "Interrompu"}
@@ -162,3 +163,58 @@ with open_column:
                 common.select_page(None)
                 common.flash("success", f"Projet « {by_id[chosen].name} » ouvert.")
                 st.rerun()
+
+        # ------------------------------------------------------------------- modifier
+        with st.expander("Modifier ce projet", icon=":material/edit:"):
+            try:
+                selected = project_service.open_project(chosen)
+            except BookOcrError as error:
+                st.error(error.user_message)
+                selected = None
+            if selected is not None:
+                installed_languages = ocr_service.available_languages() or list(selected.languages)
+                with st.form(f"edit_project_{chosen}", border=False):
+                    new_name = st.text_input("Nom du livre", value=selected.name)
+                    new_author = st.text_input("Auteur (facultatif)", value=selected.author or "")
+                    new_expected = st.number_input("Nombre de pages attendu (0 = inconnu)", min_value=0,
+                                                   max_value=100_000, value=int(selected.expected_page_count or 0))
+                    options = sorted(set(installed_languages) | set(selected.languages))
+                    new_languages = st.multiselect("Langues du texte (OCR)", options, default=selected.languages)
+                    save_edit = st.form_submit_button("Enregistrer les modifications", type="primary",
+                                                      icon=":material/save:")
+                if save_edit:
+                    with common.user_action("Projet modifié.") as result:
+                        project_service.update_project_details(
+                            chosen, name=new_name, author=new_author, expected_page_count=int(new_expected) or None,
+                            languages=new_languages)
+                    if result.ok:
+                        st.rerun()
+                if new_languages != selected.languages:
+                    st.caption("Changer les langues ne relance pas l'OCR des pages déjà traitées.")
+
+        # ------------------------------------------------------------------- supprimer
+        with st.expander("Supprimer ce projet", icon=":material/delete:"):
+            st.caption(f"« {by_id[chosen].name} » ({by_id[chosen].page_count} page(s)) sera mis à la corbeille : "
+                       "photos, résultats et exports restent sur le disque et le projet peut être restauré.")
+            confirm = st.checkbox("Je confirme la suppression de ce projet", key=f"confirm_delete_{chosen}")
+            if st.button("Mettre à la corbeille", icon=":material/delete:", disabled=not confirm):
+                with common.user_action(f"Projet « {by_id[chosen].name} » mis à la corbeille.") as result:
+                    scanning_service.delete_book(chosen)
+                if result.ok:
+                    if st.session_state.get("project_id") == chosen:
+                        st.session_state["project_id"] = None
+                        common.select_page(None)
+                    st.rerun()
+
+    trashed = project_service.list_trashed_projects()
+    if trashed:
+        with st.expander(f"Corbeille ({len(trashed)} projet(s))", icon=":material/restore_from_trash:"):
+            for item in trashed:
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    st.markdown(f"**{item.name}** · {item.page_count} page(s) · supprimé le "
+                                f"{item.deleted_at:%d/%m/%Y %H:%M}")
+                    if st.button("Restaurer", key=f"restore_{item.trash_name}", icon=":material/restore:"):
+                        with common.user_action(f"Projet « {item.name} » restauré.") as result:
+                            scanning_service.restore_book(item.trash_name)
+                        if result.ok:
+                            st.rerun()

@@ -26,8 +26,8 @@ from models import OcrResult, Page, PageStatus, Project
 from models.errors import BookOcrError, ExportError, ProcessingError
 from models.geometry import Point
 from models.reports import Issue, Severity
-from models.scanning import (AdjustmentPlan, AdjustmentSource, AnalysisRecord, OrientationIssue, QualityCheck,
-                             ScanAdjustments, ScanBookSettings, ScanPageRecord, ScanState, SearchablePageInput, SearchablePdfReport,
+from models.scanning import (AdjustmentPlan, AdjustmentSource, AnalysisRecord, BookScanStats, OrientationIssue,
+                             PageKind, QualityCheck, ScanAdjustments, ScanBookSettings, ScanPageRecord, ScanState, SearchablePageInput, SearchablePdfReport,
                              SearchablePdfValidation, utc_now)
 from repositories import scan_repository
 from services import (export_service, image_analysis_service, image_enhancement, image_quality_service,
@@ -36,6 +36,9 @@ from services.processing_service import Step
 
 logger = logging.getLogger("bookocr.scanning")
 
+COVER_PICTURE_SHARE = 0.6          # images sur plus de 60 % de la page : couverture / page illustrée
+IMAGE_PICTURE_SHARE = 0.03         # au moins 3 % d'images : page « avec image(s) »
+COVER_PAPER_MAX = 90.0             # pas de papier clair (fond sombre ou coloré pleine page) : couverture
 PREVIEW_SIDE = 1400                # aperçu interactif (curseurs) : calcul sur une copie réduite
 MIN_QUAD_SHARE = 0.05              # un recadrage manuel couvre au moins 5 % de la photo
 MIN_QUAD_ANGLE = 45.0              # angles intérieurs admis pour un recadrage manuel (degrés)
@@ -290,6 +293,7 @@ def _render(project: Project, page: Page, record: ScanPageRecord, straightened: 
     record.quality = check
     # Bloc de contenu à centrer dans le PDF : seulement sur fond blanc (sinon le bord de la photo se verrait).
     record.content_box = image_quality_service.content_box(final) if removed and final_source == "enhanced" else None
+    record.page_kind, record.picture_share = classify_page(final)
     record.timings_s["render"] = round(time.monotonic() - started, 2)
     return final
 
@@ -665,3 +669,86 @@ def describe_changes(project: Project, page: Page, record: ScanPageRecord) -> li
     if record.quality is not None and record.quality.ocr_word_count is not None:
         changes.append(f"Texte reconnu : {record.quality.ocr_word_count} mots (couche invisible)")
     return changes
+
+
+
+# --------------------------------------------------------------------------- types de page et statistiques
+
+
+def classify_page(final: np.ndarray) -> tuple[PageKind, float]:
+    """Type de la page finale : couverture (images sur la plupart de la page ou pas de papier clair), avec
+    image(s) (au moins 3 % d'images : photos, illustrations, aplats colorés, rectangles encadrés), texte seul."""
+    small = image_service.downscale(final, 900)[0]
+    share = float(image_enhancement.image_regions(small).mean())
+    paper = float(np.percentile(image_service.to_gray(small), 90))
+    if paper < COVER_PAPER_MAX or share >= COVER_PICTURE_SHARE:
+        return PageKind.COVER, round(share, 4)
+    if share >= IMAGE_PICTURE_SHARE:
+        return PageKind.IMAGE, round(share, 4)
+    return PageKind.TEXT, round(share, 4)
+
+
+def ensure_page_kind(project: Project, page: Page, record: ScanPageRecord) -> ScanPageRecord:
+    """Classe une page déjà traitée avant l'existence du classement (lecture de final.jpg, une fois)."""
+    if record.page_kind is None and record.final_file:
+        final = load_final(project, record)
+        if final is not None:
+            record.page_kind, record.picture_share = classify_page(final)
+            save_record(project, record)
+    return record
+
+
+def set_page_kind(project: Project, page_id: str, kind: PageKind | None) -> ScanPageRecord:
+    """Type choisi par l'utilisateur (None = revenir au type détecté)."""
+    record = load_record(project, project.page(page_id))
+    record.page_kind_override = kind
+    save_record(project, record)
+    return record
+
+
+def book_statistics(project: Project) -> BookScanStats:
+    """Pages du livre par état, et pages terminées par type effectif (texte seul, avec image, couverture)."""
+    sync_queue(project)
+    states = {task.page_id: task.state for task in scan_repository.tasks(project.id)}
+    stats = BookScanStats(book_id=project.id, book_name=project.name, total_pages=len(project.pages),
+                          by_kind={kind: 0 for kind in PageKind})
+    for page in project.pages:
+        state = states.get(page.id, ScanState.PENDING)
+        if state == ScanState.COMPLETED:
+            stats.completed_pages += 1
+            record = ensure_page_kind(project, page, load_record(project, page))
+            if record.effective_kind is not None:
+                stats.by_kind[record.effective_kind] += 1
+        elif state == ScanState.REVIEW_REQUIRED:
+            stats.review_pages += 1
+        elif state == ScanState.FAILED:
+            stats.failed_pages += 1
+        else:
+            stats.pending_pages += 1
+    return stats
+
+
+# --------------------------------------------------------------------------- livres : suppression et restauration
+
+
+def delete_book(project_id: str) -> str:
+    """Met un livre à la corbeille (restaurable) et le retire de la file. Refusé pendant un traitement."""
+    from workers import scan_runner
+
+    if processing_service.is_running(project_id) or (
+            scan_runner.is_running() and project_id in scan_runner.status().book_ids):
+        raise ProcessingError("Un traitement est en cours sur ce livre : arrêtez-le avant de le supprimer.")
+    trash_name = project_service.trash_project(project_id)
+    scan_repository.delete_book(project_id)
+    return trash_name
+
+
+def restore_book(trash_name: str) -> Project:
+    """Restaure un livre de la corbeille et reconstruit l'état de sa file depuis les résultats enregistrés."""
+    project = project_service.restore_project(trash_name)
+    sync_queue(project)
+    for page in project.pages:
+        record = load_record(project, page)
+        if is_current(page, record) or record.error:
+            scan_repository.set_state(project.id, page.id, _final_state(record), error=record.error)
+    return project

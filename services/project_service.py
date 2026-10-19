@@ -836,3 +836,91 @@ def delete_pages(project: Project, page_ids: list[str]) -> None:
     project.pages = remaining
     save_project(project)
     logger.info("Page(s) supprimée(s) de %s vers la corbeille : %s", project.id, wanted)
+
+
+# --------------------------------------------------------------------------- gestion des projets
+
+
+class TrashedProject(ProjectSummary):
+    """Projet mis à la corbeille (data/trash/projects/<id>_<horodatage>), restaurable."""
+
+    trash_name: str
+    deleted_at: datetime
+
+
+def projects_trash_dir() -> Path:
+    return config.data_dir() / "trash" / "projects"
+
+
+def update_project_details(project_id: str, *, name: str, author: str | None = None,
+                           expected_page_count: int | None = None, languages: list[str] | None = None) -> Project:
+    """Modifie les informations d'un livre (nom, auteur, pages attendues, langues) et enregistre."""
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise ValueError("Le nom du projet ne peut pas être vide.")
+    if languages is not None and not languages:
+        raise ValueError("Choisissez au moins une langue d'OCR.")
+    with project_lock(project_id):
+        project = open_project(project_id)
+        project.name = clean_name
+        project.author = (author or "").strip() or None
+        project.expected_page_count = expected_page_count or None
+        if languages is not None:
+            project.languages = list(languages)
+        save_project(project)
+    logger.info("Projet modifié : %s (%s)", project.name, project.id)
+    return project
+
+
+def trash_project(project_id: str) -> str:
+    """Met le projet entier à la corbeille (déplacement, rien n'est effacé) ; renvoie le nom dans la corbeille."""
+    folder = project_dir(project_id)
+    if not folder.is_dir():
+        raise ProjectNotFoundError("Projet introuvable.", detail=project_id)
+    with project_lock(project_id):
+        target_root = projects_trash_dir()
+        target_root.mkdir(parents=True, exist_ok=True)
+        trash_name = f"{project_id}_{_timestamp()}"
+        shutil.move(str(folder), str(target_root / trash_name))
+    logger.info("Projet mis à la corbeille : %s -> %s", project_id, trash_name)
+    return trash_name
+
+
+def list_trashed_projects() -> list[TrashedProject]:
+    root = projects_trash_dir()
+    if not root.is_dir():
+        return []
+    found: list[TrashedProject] = []
+    for folder in sorted(root.iterdir(), reverse=True):
+        try:
+            project = _load_project_file(folder / PROJECT_FILE)
+        except BookOcrError as error:
+            logger.warning("Projet illisible dans la corbeille (%s) : %s", folder.name, error)
+            continue
+        stamp = folder.name.rsplit("_", 1)[-1]
+        try:
+            deleted_at = datetime.strptime(stamp, _TIMESTAMP)
+        except ValueError:
+            deleted_at = datetime.fromtimestamp(folder.stat().st_mtime)
+        found.append(TrashedProject(
+            id=project.id, name=project.name, updated_at=project.updated_at, page_count=len(project.pages),
+            analysed_count=sum(page.status == PageStatus.ANALYSED for page in project.pages),
+            error_count=sum(page.status == PageStatus.ERROR for page in project.pages),
+            trash_name=folder.name, deleted_at=deleted_at))
+    return found
+
+
+def restore_project(trash_name: str) -> Project:
+    """Remet un projet de la corbeille à sa place ; refusé si un projet de même identifiant existe déjà."""
+    source = projects_trash_dir() / trash_name
+    if "/" in trash_name or not source.is_dir():
+        raise ProjectNotFoundError("Projet introuvable dans la corbeille.", detail=trash_name)
+    project = _load_project_file(source / PROJECT_FILE)
+    target = project_dir(project.id)
+    if target.exists():
+        raise ProjectCorruptedError("Un projet de même identifiant existe déjà : restauration impossible.",
+                                    detail=project.id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
+    logger.info("Projet restauré : %s", project.id)
+    return open_project(project.id)

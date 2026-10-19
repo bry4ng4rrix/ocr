@@ -267,6 +267,18 @@ class QualityCheck(BaseModel):
 FinalSource = Literal["enhanced", "straightened"]
 
 
+class PageKind(StrEnum):
+    """Type de page pour les statistiques et les prix."""
+
+    TEXT = "text"              # texte seul (pas d'image)
+    IMAGE = "image"            # page avec photo(s) ou illustration(s)
+    COVER = "cover"            # couverture ou page entièrement illustrée (photo pleine page, fond sombre)
+
+
+PAGE_KIND_LABELS = {PageKind.TEXT: "Texte seul", PageKind.IMAGE: "Avec image(s)",
+                    PageKind.COVER: "Couverture avec image"}
+
+
 class ScanBookSettings(BaseModel):
     """Réglages de numérisation d'un livre (data/projects/<id>/scan/settings.json)."""
 
@@ -299,11 +311,18 @@ class ScanPageRecord(BaseModel):
     ocr_signature: str | None = None                 # final_signature au moment de l'OCR
     quality: QualityCheck | None = None
     content_box: Box | None = None                   # bloc de contenu (texte + images) sur final.jpg, fond exclu
+    picture_share: float | None = None               # part de la page couverte par des images (final.jpg)
+    page_kind: PageKind | None = None                # type détecté (texte seul, avec image, couverture)
+    page_kind_override: PageKind | None = None       # type choisi par l'utilisateur (prioritaire)
     review_reasons: list[str] = Field(default_factory=list)
     validated: bool = False                          # validation explicite par l'utilisateur
     error: str | None = None
     timings_s: dict[str, float] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def effective_kind(self) -> PageKind | None:
+        return self.page_kind_override or self.page_kind
 
     def remember(self, source: AdjustmentSource, adjustments: ScanAdjustments) -> None:
         """Applique des réglages et garde l'historique (borné) pour pouvoir revenir en arrière."""
@@ -356,3 +375,16 @@ class SearchablePdfValidation(BaseModel):
     passed: bool = False
     issues: list[Issue] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class BookScanStats(BaseModel):
+    """Statistiques d'un livre : pages terminées par type (texte seul, avec image, couverture)."""
+
+    book_id: str
+    book_name: str
+    total_pages: int = 0
+    completed_pages: int = 0           # traitement terminé (ou page à vérifier validée)
+    review_pages: int = 0
+    failed_pages: int = 0
+    pending_pages: int = 0
+    by_kind: dict[PageKind, int] = Field(default_factory=dict)   # pages terminées, par type effectif
