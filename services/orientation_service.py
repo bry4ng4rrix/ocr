@@ -27,7 +27,7 @@ from models.errors import OcrFailedError, OcrUnavailableError
 from models.geometry import Point
 from models.page import GeometryCorrection
 from models.reports import Issue, Severity
-from services import ocr_service
+from services import ocr_service, page_bounds
 from services.image_service import downscale, picture_share, to_gray
 
 logger = logging.getLogger("bookocr.orientation")
@@ -580,6 +580,16 @@ def dewarp(rgb: np.ndarray) -> tuple[np.ndarray, CurvatureResult]:
 
 def _detect_sheet(image: np.ndarray, geometry: GeometryCorrection, issues: list[Issue]) -> None:
     found = detect_page_quad(image)
+    if found is None or found.uncertain:
+        # Fond pas plus sombre partout (marge claire, tranche du livre, table) : bords par la couleur du papier.
+        by_paper = page_bounds.detect_paper_quad(image)
+        # Un contour incertain mais présent n'est remplacé que par un contour qui couvre la même zone.
+        consistent = found is None or (by_paper is not None and
+                                       page_bounds.quad_overlap(found.corners, by_paper.corners) >= 0.8)
+        if by_paper is not None and not by_paper.uncertain and consistent:
+            found = by_paper
+            issues.append(_issue("quad_from_paper", "Contour de la page trouvé par la couleur du papier "
+                                 "(fond irrégulier autour de la page).", Severity.INFO))
     geometry.detected_quad = found.corners if found else None
     geometry.quad_uncertain = bool(found and found.uncertain)
     if found is None:

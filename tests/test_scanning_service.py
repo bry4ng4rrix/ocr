@@ -229,3 +229,28 @@ def test_rescanning_keeps_docx_analysis_status(data_dir, tmp_path, photographed,
     scanning_service.process_page(project, page_id, use_ai=False, regeometry=True)
     assert calls == [1]
     assert project_service.open_project(project.id).page(page_id).status == PageStatus.ANALYSED
+
+
+def test_book_files_are_imported_in_natural_order_and_changes_described(data_dir, tmp_path):
+    images = {name: synthetic.save(synthetic.on_dark_background(synthetic.text_page(), seed=seed),
+                                   tmp_path / name, ".jpg")
+              for seed, name in ((2, "p10"), (3, "p2"), (4, "p1"))}
+    project = scanning_service.create_book("Livre trié", ["fra"])
+    files = [(f"{name}.jpg", path.read_bytes()) for name, path in images.items()]
+    scanning_service.import_book_files(project, files)
+    assert [page.original_name for page in project.pages] == ["p1.jpg", "p2.jpg", "p10.jpg"]
+    assert [task.page_id for task in scan_repository.tasks(project.id)] == [page.id for page in project.pages]
+    page = project.pages[0]
+    record = scanning_service.process_page(project, page.id, use_ai=False)
+    changes = scanning_service.describe_changes(project, project.page(page.id), record)
+    assert any("Bords détectés" in change for change in changes)
+    assert any("Texte reconnu" in change for change in changes)
+
+
+def test_book_folder_import_requires_photos(data_dir, tmp_path):
+    project = scanning_service.create_book("Vide", ["fra"])
+    (tmp_path / "vide").mkdir()
+    with pytest.raises(ProcessingError):
+        scanning_service.import_book_folder(project, tmp_path / "vide")
+    with pytest.raises(ProcessingError):
+        scanning_service.create_book("  ", ["fra"])

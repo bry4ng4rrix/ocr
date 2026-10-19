@@ -170,11 +170,13 @@ class ScanAdjustments(BaseModel):
     """Réglages photographiques non destructifs appliqués à la page redressée. Valeurs neutres = identité.
 
     Échelles identiques à `models.page.ImageEnhancement` (−100..100 / 0..100) ; `gamma` > 1 éclaircit les
-    tons moyens ; `exposure` multiplie la clarté par 2^(exposure/50) (papier gris ramené vers le blanc).
+    tons moyens ; `exposure` multiplie la clarté par 2^(exposure/50) ; `paper_whitening` divise par le fond
+    du papier estimé (éclairage uniformisé, papier ramené vers le blanc ; illustrations au gain du papier voisin).
     `crop_*` rognent une fraction de chaque bord après redressement (bande de fond restée au bord).
     Aucune binarisation ni conversion en gris : les couleurs de la photographie sont conservées.
     """
 
+    paper_whitening: float = Field(default=0.0, ge=0, le=100)     # fond du papier uniformisé et blanchi
     exposure: float = Field(default=0.0, ge=-30, le=40)
     brightness: float = Field(default=0.0, ge=-50, le=50)
     contrast: float = Field(default=0.0, ge=-50, le=50)

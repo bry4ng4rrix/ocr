@@ -4,6 +4,13 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Modifié — 2026-10-19 (numérisation intelligente, retours utilisateur)
+- Écran réorganisé en 5 étapes. Un livre (existant ou nouveau) reçoit toutes ses photos en une fois, par téléversement ou depuis un dossier local, dans l'ordre naturel des noms. Un bouton « Importer et traiter le livre » lance le traitement. La galerie montre chaque page avant/après avec la liste des modifications faites. Viennent ensuite la retouche d'une page et le PDF du livre.
+- Bords de page plus robustes (`services/page_bounds.py`) : secours par la couleur du papier quand la page n'est pas claire sur fond sombre (marge blanche, bandes noires, tranche du livre). Il n'est utilisé que si du fond entoure au moins 3 côtés et s'il ne contredit pas un contour existant.
+- Bords restants retirés après redressement : bandes sombres, rangées sans papier, et tranches d'autres pages au-delà du vrai bord (ligne continue).
+- Nettoyage du fond (`paper_whitening`) : éclairage du papier uniformisé et papier ramené vers le blanc ; photographies au gain du papier voisin, couleurs conservées.
+- PDF « pages de même format, contenu centré » (par défaut) : format = taille médiane des pages + marge ; chaque photo ajustée sans déformation et centrée, sans recompression.
+
 ### Ajouté — 2026-10-19 (numérisation intelligente)
 - Écran « Numérisation intelligente » (`components/screens/smart_scan.py`). Il réunit :
   - l'état réel d'Ollama et de Tesseract, la progression par livre et pour toute la bibliothèque ;

@@ -56,7 +56,7 @@ def test_dark_page_is_brightened_without_color_change(clean):
     metrics = image_quality_service.measure(dark)
     assert metrics.paper_level < 185
     plan = image_enhancement.plan_adjustments(metrics)
-    assert ScanAction.LIGHTING_CORRECTION in plan.actions and plan.adjustments.exposure > 0
+    assert ScanAction.LIGHTING_CORRECTION in plan.actions and plan.adjustments.paper_whitening > 0
     out = image_enhancement.apply_adjustments(dark, plan.adjustments)
     after = image_quality_service.measure(out)
     assert after.paper_level > metrics.paper_level + 30
@@ -69,7 +69,7 @@ def test_shadow_is_measured_and_corrected(clean):
     metrics = image_quality_service.measure(shaded)
     assert metrics.illumination_unevenness > 0.3
     plan = image_enhancement.plan_adjustments(metrics)
-    assert ScanAction.SHADOW_CORRECTION in plan.actions
+    assert ScanAction.SHADOW_CORRECTION in plan.actions and plan.adjustments.paper_whitening > 0
     out = image_enhancement.apply_adjustments(shaded, plan.adjustments)
     assert image_quality_service.measure(out).illumination_unevenness < metrics.illumination_unevenness / 2
     assert not image_quality_service.compare(shaded, out, metrics).enhancement_degraded
@@ -159,3 +159,27 @@ def test_adjustments_never_modify_input(clean):
     image_enhancement.apply_adjustments(clean, ScanAdjustments(exposure=10, shadow_correction=30, sharpness=20,
                                                                denoise=10, crop_top=0.01))
     assert np.array_equal(copy, clean)
+
+
+def test_paper_whitening_clears_background_but_keeps_photo_colors(photo):
+    dull = _shadow(_darken(photo, 0.75))
+    out = image_enhancement.apply_adjustments(dull, ScanAdjustments(paper_whitening=100))
+    before, after = image_quality_service.measure(dull), image_quality_service.measure(out)
+    assert after.paper_level >= 230 and after.illumination_unevenness < before.illumination_unevenness / 2
+    assert image_quality_service.colorfulness(out) >= 0.8 * image_quality_service.colorfulness(dull)
+    assert not image_quality_service.compare(dull, out, before).enhancement_degraded
+
+
+def test_book_block_stripes_beyond_the_page_edge_are_trimmed(clean):
+    """Tranches d'autres pages (couleur papier, fines lignes) restées à droite du vrai bord de la page."""
+    page = clean.copy()
+    height, width = page.shape[:2]
+    edge = width - int(0.025 * width)
+    page[:, edge:edge + 2] = 90                                     # vrai bord de la page : ligne continue
+    for x in range(edge + 6, width, 5):
+        page[:, x] = 150                                            # tranches des pages suivantes
+    metrics = image_quality_service.measure(page)
+    assert 0.015 < metrics.dark_edges[2] <= 0.04 and metrics.dark_edges[0] == 0
+    plan = image_enhancement.plan_adjustments(metrics)
+    out = image_enhancement.apply_adjustments(page, plan.adjustments)
+    assert out.shape[1] <= edge and (out[:, -10:] < 120).mean() < 0.01

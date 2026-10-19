@@ -114,7 +114,7 @@ def analysed_project(data_dir, _analysed_template):
 @pytest.mark.parametrize("screen", SCREENS)
 def test_screen_without_project(data_dir, screen):
     at = _open(screen)
-    if screen not in {common.SCREEN_DASHBOARD, common.SCREEN_PDF_SCAN}:
+    if screen not in {common.SCREEN_DASHBOARD, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN}:
         assert any("Aucun projet ouvert" in info.value for info in at.info)
 
 

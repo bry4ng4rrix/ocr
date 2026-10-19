@@ -391,6 +391,18 @@ scan_runner.start(book_ids, page_ids=None, *, retry_failed=False, use_ai=None) ;
     # un seul worker de numérisation par processus ; livres traités l'un après l'autre
 ```
 
-Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement).
+Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement). Déroulé :
+1. livre (existant ou nouveau) et toutes ses photos (téléversement ou dossier local) ;
+2. un bouton lance le traitement en arrière-plan ;
+3. galerie avant/après avec les modifications (`describe_changes`) ;
+4. retouche d'une page ;
+5. PDF du livre.
+
+Compléments v1.1 (19/10) :
+- `page_bounds.detect_paper_quad(rgb)` : secours de `orientation_service._detect_sheet` par la couleur du papier. Il intervient seulement si le contour clair-sur-sombre est absent ou incertain, s'il y a du fond sur au moins 3 côtés, et avec un recouvrement ≥ 80 % si un contour incertain existe.
+- `ScanAdjustments.paper_whitening` et `image_enhancement.whiten_paper` : nettoyage du fond.
+- `ImageMetrics.dark_edges` : bande sombre, rangées sans papier (2,5 % au plus) ou ligne du vrai bord de page (4 % au plus).
+- `pdf_export.build_searchable_pdf(..., uniform=True)` : pages de même format, images ajustées et centrées.
+- `scanning_service.create_book`, `import_book_files` (ordre naturel), `import_book_folder`, `describe_changes`, `export_book_pdf(..., uniform=True)`.
 
 Règles : Gemma ne fixe jamais de coordonnées ni de rotation ; une orientation incertaine (OSD) ou contredite par Gemma passe la page en `REVIEW_REQUIRED` sans rotation ; `OLLAMA_AUTO_APPLY=false` (défaut) : le traitement applique le plan **mesuré** et range le plan Gemma dans `proposed_plan` (aperçu puis validation) ; `true` : le plan combiné est appliqué, les incertitudes passent en vérification. Les originaux ne sont jamais réécrits ; chaque réglage est un paramètre rejoué depuis la page redressée.

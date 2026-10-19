@@ -30,7 +30,7 @@ Le pipeline n'exécute aucun texte du modèle : ni code, ni commande, ni chemin.
 ## 3. Pipeline d'une page
 
 1. **Import** (existant) : original copié sous `originals/<sha256[:16]>`, jamais réécrit ; EXIF appliqué à la lecture ; formats et dimensions contrôlés.
-2. **Géométrie** (existant, `processing_service.run_geometry`) : feuille, perspective, quart de tour (OSD et lecture), inclinaison, courbure prudente → `corrected/<page>.png`. Les incertitudes deviennent des motifs de vérification.
+2. **Géométrie** (existant, `processing_service.run_geometry`, avec le secours `page_bounds` par la couleur du papier) : feuille, perspective, quart de tour (OSD et lecture), inclinaison, courbure prudente → `corrected/<page>.png`. Les incertitudes deviennent des motifs de vérification.
 3. **Analyse Gemma** (facultative) : copie JPEG réduite à **896 px**. Gemma 3 traite toute image en 896 × 896, soit 256 jetons ; envoyer plus grand ne sert à rien (mesure : 297 jetons d'entrée au total). Une page par requête, une requête à la fois. Le résultat est mis en cache selon l'empreinte SHA-256 de l'image envoyée, le modèle, son digest et la version de la consigne.
 4. **Mesures** (`image_quality_service.measure`) sur la page redressée.
 5. **Plan** (`image_enhancement.plan_adjustments`) : mesures seules, ou mesures + Gemma.

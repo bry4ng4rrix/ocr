@@ -164,3 +164,26 @@ def test_end_to_end_with_tesseract(tmp_path):
     assert validation.passed, validation.issues
     with pymupdf.open(output) as document:
         assert document[0].search_for("chapitre") and document[0].search_for("village")
+
+
+def test_uniform_layout_centres_pages_of_different_sizes(tmp_path, book):
+    small = _page(tmp_path, "petite", ["Kleine", "Seite"])
+    Image.open(small.image_path).resize((600, 800)).save(small.image_path, "JPEG", quality=92)
+    pages = [book[0], small, book[1]]
+    output = tmp_path / "uniforme.pdf"
+    report = pdf_export.build_searchable_pdf(pages, output, uniform=True)
+    assert report.page_count == 3
+    with pymupdf.open(output) as document:
+        sizes = {(round(page.rect.width, 2), round(page.rect.height, 2)) for page in document}
+        assert len(sizes) == 1                                                  # même format pour tout le livre
+        for page in document:
+            area = page.get_image_rects(page.get_images()[0][0])[0]
+            assert abs((area.x0 + area.x1) / 2 - page.rect.width / 2) < 0.5     # centré
+            assert abs((area.y0 + area.y1) / 2 - page.rect.height / 2) < 0.5
+            assert area.x0 > 0 and area.y0 > 0                                  # marge blanche
+        page = document[1]                                                      # petite image agrandie à la zone
+        area = page.get_image_rects(page.get_images()[0][0])[0]
+        hit = page.search_for("Kleine")[0]
+        assert area.contains(hit)
+    validation = pdf_export.validate_searchable_pdf(output, pages)
+    assert validation.passed, validation.issues

@@ -68,6 +68,7 @@ COLOR_CHECK_SIDE = 300                # rendu de contrôle des couleurs (pixels 
 MAX_COLOR_DELTA = 6.0                 # écart moyen Lab toléré entre le rendu PDF et l'image finale
 PROBE_MIN_LETTERS = 4
 PROBE_MIN_CONFIDENCE = 70.0
+UNIFORM_MARGIN = 0.03                 # marge blanche (fraction) autour de l'image en format uniforme
 
 
 def _ocr_font() -> tuple[str, "object | None"]:
@@ -102,9 +103,14 @@ def _jpeg_bytes(path: str) -> tuple[bytes, int, int]:
     return data, width, height
 
 
-def _write_words(page, words: list[OcrWord], font, fontfile: str, scale_x: float, scale_y: float) -> int:
-    """Chaque mot en rendu 3 (invisible), ligne de base en bas de sa boîte, étiré à la largeur de la boîte."""
+def _write_words(page, words: list[OcrWord], font, fontfile: str, area) -> int:
+    """Chaque mot en rendu 3 (invisible), ligne de base en bas de sa boîte, étiré à la largeur de la boîte.
+
+    `area` : rectangle de l'image sur la page (les boîtes OCR sont normalisées sur l'image).
+    """
     import pymupdf
+
+    scale_x, scale_y = area.width, area.height
 
     ascender, descender = float(font.ascender), float(font.descender)
     em_height = max(ascender - descender, 0.5)
@@ -113,10 +119,10 @@ def _write_words(page, words: list[OcrWord], font, fontfile: str, scale_x: float
         text = word.text.strip()
         if not text:
             continue
-        left = word.box.x * scale_x
+        left = area.x0 + word.box.x * scale_x
         width = word.box.w * scale_x
         height = word.box.h * scale_y
-        bottom = (word.box.y + word.box.h) * scale_y
+        bottom = area.y0 + (word.box.y + word.box.h) * scale_y
         size = max(height / em_height, 1.0)
         natural = font.text_length(text, fontsize=size)
         if natural <= 0 or width <= 0:
@@ -129,11 +135,14 @@ def _write_words(page, words: list[OcrWord], font, fontfile: str, scale_x: float
     return written
 
 
-def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi: int | None = None) -> SearchablePdfReport:
+def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi: int | None = None, *,
+                         uniform: bool = False, margin: float = UNIFORM_MARGIN) -> SearchablePdfReport:
     """Un PDF : une page par entrée, dans l'ordre ; photographie finale visible, mots OCR invisibles.
 
-    L'image (JPEG final, sans EXIF) est insérée sans recompression et couvre toute la page ; la page n'est
-    jamais tournée. Les mots sont écrits en mode de rendu 3 (invisibles, pas de texte blanc) dans leur boîte.
+    L'image (JPEG final, sans EXIF) est insérée sans recompression ; la page n'est jamais tournée. Par défaut
+    la page a la taille de l'image. `uniform=True` : toutes les pages ont le même format (taille médiane des
+    images + `margin` de chaque côté) ; chaque image y est ajustée sans déformation et centrée (fond blanc).
+    Les mots sont écrits en mode de rendu 3 (invisibles, pas de texte blanc) dans leur boîte.
     """
     import pymupdf
 
@@ -143,13 +152,28 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
     output = Path(output)
     report = SearchablePdfReport(output=str(output), expected_pages=len(pages), dpi=dpi)
     fontfile, font = _ocr_font()
+    images = [_jpeg_bytes(item.image_path) for item in pages]
+    points = 72.0 / dpi
+    if uniform:
+        # Zone de contenu commune = taille médiane des pages du livre ; chaque image y est ajustée (proportions
+        # gardées) et centrée : des photos de résolutions différentes donnent des pages de même taille.
+        content_width = float(np.median([width for _, width, _ in images])) * points
+        content_height = float(np.median([height for _, _, height in images])) * points
+        page_width, page_height = content_width * (1 + 2 * margin), content_height * (1 + 2 * margin)
     document = pymupdf.open()
     try:
         document.set_metadata({"creator": "book-ocr (numérisation)", "producer": f"PyMuPDF {pymupdf.VersionBind}"})
-        for index, item in enumerate(pages):
-            data, width, height = _jpeg_bytes(item.image_path)
-            page = document.new_page(width=width * 72.0 / dpi, height=height * 72.0 / dpi)
-            page.insert_image(page.rect, stream=data, keep_proportion=False)
+        for index, (item, (data, width, height)) in enumerate(zip(pages, images)):
+            if uniform:
+                page = document.new_page(width=page_width, height=page_height)
+                fit = min(content_width / width, content_height / height)
+                shown_width, shown_height = width * fit, height * fit
+                x0, y0 = (page_width - shown_width) / 2, (page_height - shown_height) / 2
+                area = pymupdf.Rect(x0, y0, x0 + shown_width, y0 + shown_height)
+            else:
+                page = document.new_page(width=width * points, height=height * points)
+                area = page.rect
+            page.insert_image(area, stream=data, keep_proportion=False)
             ocr = _read_ocr(item.ocr_path)
             if ocr is None or not ocr.words:
                 report.pages_without_text.append(index)
@@ -160,7 +184,7 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
                 report.issues.append(Issue(code="scan_pdf_ocr_size", severity=Severity.WARNING, page_id=item.page_id,
                                            message=f"Page {index + 1} : l'OCR a été fait sur une image de taille "
                                                    "différente ; coordonnées remises à l'échelle."))
-            report.words_written += _write_words(page, ocr.words, font, fontfile, page.rect.width, page.rect.height)
+            report.words_written += _write_words(page, ocr.words, font, fontfile, area)
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex[:8]}.tmp")
         try:
@@ -194,14 +218,13 @@ def _probe_words(ocr: OcrResult, count: int) -> list[str]:
     return unique[:count]
 
 
-def _render_delta(page, image_bytes: bytes) -> float:
-    """Écart moyen Lab entre le rendu de la page (couche texte comprise) et l'image source réduite."""
+def _render_delta(page, image_bytes: bytes, area) -> float:
+    """Écart moyen Lab entre le rendu de la zone image (couche texte comprise) et l'image source réduite."""
     import cv2
-
-    zoom = COLOR_CHECK_SIDE / max(page.rect.width, page.rect.height)
     import pymupdf
 
-    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False)
+    zoom = COLOR_CHECK_SIDE / max(area.width, area.height)
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csRGB, alpha=False, clip=area)
     rendered = np.frombuffer(pixmap.samples, np.uint8).reshape(pixmap.height, pixmap.width, 3)
     with Image.open(io.BytesIO(image_bytes)) as image:
         source = np.asarray(image.convert("RGB").resize((pixmap.width, pixmap.height), Image.Resampling.BOX))
@@ -250,7 +273,9 @@ def validate_searchable_pdf(path: Path, pages: Sequence[SearchablePageInput],
                 unrecompressed = False
                 result.issues.append(Issue(code="scan_pdf_image_changed", severity=Severity.ERROR, page_id=item.page_id,
                                            message=f"Page {index + 1} : l'image du PDF diffère du JPEG final."))
-            deltas.append(_render_delta(pdf_page, source))
+            if images:
+                rects = pdf_page.get_image_rects(images[0][0])
+                deltas.append(_render_delta(pdf_page, source, rects[0] if rects else pdf_page.rect))
             if ocr is not None:
                 for word in _probe_words(ocr, probes_per_page):
                     found = bool(pdf_page.search_for(word))

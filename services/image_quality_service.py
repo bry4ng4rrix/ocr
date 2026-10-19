@@ -27,6 +27,11 @@ MAX_COLOR_LOSS = 0.5           # couleur après < 50 % de l'avant sur une page c
 COLORFUL_PAGE = 15.0           # indice de Hasler au-dessus duquel la page est jugée colorée
 MAX_BORDER_CONTENT = 0.06      # part d'encre dans la bande de bord : contenu peut-être coupé
 DARK_STRIP_RELATIVE = 0.45     # rangée de bord plus sombre que 45 % du papier : fond du banc, pas la page
+EDGE_LINE_BAND = 0.04         # recherche d'une ligne de bord de page dans les 4 % extérieurs
+EDGE_LINE_SHARE = 0.55         # ligne continue sur plus de 55 % de la hauteur (ou largeur)
+EDGE_LINE_GRADIENT = 12.0      # gradient de Sobel minimal (niveaux de gris) d'un pixel de ligne
+FOREIGN_STRIP_MAX = 0.025      # bande extérieure où une rangée sans papier est du fond (tranche, marge)
+FOREIGN_PAPER_SHARE = 0.3      # rangée « sans papier » : moins de 30 % de pixels couleur papier
 MAX_DARK_STRIP = 0.08          # une bande plus large n'est plus un simple reste de fond
 NOISE_WINDOW = 1024            # recadrage central (pixels) pour l'estimation du bruit
 NOISE_FLAT_PERCENTILE = 60     # pixels les moins contrastés retenus (les lettres sont exclues)
@@ -76,25 +81,67 @@ def illumination_unevenness(rgb: np.ndarray) -> float:
     return float(np.clip((high - low) / max(high, 1e-3), 0.0, 1.0))
 
 
-def dark_edges(gray: np.ndarray) -> tuple[float, float, float, float]:
-    """Largeur (fraction du côté) de la bande de fond sombre restée sur chaque bord (gauche, haut, droite, bas).
+def dark_edges(gray: np.ndarray, rgb: np.ndarray | None = None) -> tuple[float, float, float, float]:
+    """Largeur (fraction du côté) du fond resté sur chaque bord (gauche, haut, droite, bas).
 
-    Une rangée de bord compte comme fond si sa médiane est sous DARK_STRIP_RELATIVE × clarté du papier ;
-    la bande s'arrête à la première rangée claire. Bornée à MAX_DARK_STRIP.
+    Deux critères, depuis le bord vers l'intérieur, jusqu'à la première rangée de papier :
+    - rangée sombre (médiane < DARK_STRIP_RELATIVE × papier) : fond du banc, ombre, jusqu'à MAX_DARK_STRIP ;
+    - rangée presque sans couleur de papier (tranche du livre, marge blanche, table), seulement dans les
+      FOREIGN_STRIP_MAX extérieurs (une photo qui déborde au bord n'y perd au plus que cette bande).
     """
     small = downscale(gray, MEASURE_SIDE)[0].astype(np.float32)
-    height, width = small.shape
     paper = max(float(np.percentile(small, 90)), 1.0)
-    limit = DARK_STRIP_RELATIVE * paper
-    columns = np.median(small, axis=0)
-    rows = np.median(small, axis=1)
+    dark_columns = np.median(small, axis=0) < DARK_STRIP_RELATIVE * paper
+    dark_rows = np.median(small, axis=1) < DARK_STRIP_RELATIVE * paper
+    if rgb is not None and rgb.ndim == 3:
+        from services import page_bounds
 
-    def strip(profile: np.ndarray) -> float:
-        bright = np.nonzero(profile >= limit)[0]
-        count = int(bright[0]) if len(bright) else len(profile)
-        return round(min(MAX_DARK_STRIP, count / max(len(profile), 1)), 4)
+        small_rgb = downscale(rgb, MEASURE_SIDE)[0]
+        mask, _ = page_bounds._paper_mask(small_rgb)
+        foreign_columns = mask.mean(axis=0) < FOREIGN_PAPER_SHARE
+        foreign_rows = mask.mean(axis=1) < FOREIGN_PAPER_SHARE
+    else:
+        foreign_columns = np.zeros(small.shape[1], bool)
+        foreign_rows = np.zeros(small.shape[0], bool)
 
-    return (strip(columns), strip(rows), strip(columns[::-1]), strip(rows[::-1]))
+    def strip(dark: np.ndarray, foreign: np.ndarray) -> float:
+        length = max(len(dark), 1)
+        limit = int(FOREIGN_STRIP_MAX * length)
+        count = 0
+        for index in range(len(dark)):
+            if dark[index] or (index < limit and foreign[index]):
+                count += 1
+            else:
+                break
+        return round(min(MAX_DARK_STRIP, count / length), 4)
+
+    lines = edge_lines(small.astype(np.uint8))
+    strips = (strip(dark_columns, foreign_columns), strip(dark_rows, foreign_rows),
+              strip(dark_columns[::-1], foreign_columns[::-1]), strip(dark_rows[::-1], foreign_rows[::-1]))
+    return tuple(round(max(a, b), 4) for a, b in zip(strips, lines))  # type: ignore[return-value]
+
+
+def edge_lines(gray: np.ndarray) -> tuple[float, float, float, float]:
+    """Vrai bord de la page quand des tranches d'autres pages (couleur papier) restent au-delà.
+
+    Dans la bande extérieure (EDGE_LINE_BAND) de chaque côté, une colonne (ou rangée) dont le gradient est
+    fort sur plus de EDGE_LINE_SHARE de la longueur est une ligne droite continue : le texte n'en produit
+    pas (interrompu entre les mots et les lignes). La plus intérieure de ces lignes est le bord retenu.
+    """
+    height, width = gray.shape
+    gradient_x = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    gradient_y = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    rows = slice(int(0.1 * height), int(0.9 * height))
+    columns = slice(int(0.1 * width), int(0.9 * width))
+    vertical = (gradient_x[rows] > EDGE_LINE_GRADIENT).mean(axis=0)
+    horizontal = (gradient_y[:, columns] > EDGE_LINE_GRADIENT).mean(axis=1)
+
+    def innermost(profile: np.ndarray) -> float:
+        band = max(1, int(EDGE_LINE_BAND * len(profile)))
+        hits = np.nonzero(profile[:band] >= EDGE_LINE_SHARE)[0]
+        return round(float(hits.max() + 1) / len(profile), 4) if len(hits) else 0.0
+
+    return (innermost(vertical), innermost(horizontal), innermost(vertical[::-1]), innermost(horizontal[::-1]))
 
 
 def interior(image: np.ndarray, edges: tuple[float, float, float, float], margin: float = INTERIOR_MARGIN) -> np.ndarray:
@@ -124,10 +171,10 @@ def measure(rgb: np.ndarray) -> ImageMetrics:
     height, width = rgb.shape[:2]
     gray = _luminance(rgb)
     small = downscale(gray, MEASURE_SIDE)[0]
-    edges = dark_edges(small)
+    rgb3 = rgb if rgb.ndim == 3 else cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
+    edges = dark_edges(small, rgb3)
     inner = interior(small, edges)
     skew = orientation_service.estimate_skew(inner)
-    rgb3 = rgb if rgb.ndim == 3 else cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
     inner_rgb = interior(downscale(rgb3, MEASURE_SIDE)[0], edges)
     low, high = np.percentile(inner, [2, 98])
     return ImageMetrics(

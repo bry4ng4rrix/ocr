@@ -26,13 +26,13 @@ Mesures faites sur l'intérieur de la page : les bandes de fond restées aux bor
 
 | Mesure | Définition | Usage |
 |---|---|---|
-| `paper_level` | 90e centile de la luminance | papier gris (< 185) → gain d'exposition vers 228, ×1,41 au plus |
+| `paper_level` | 90e centile de la luminance | papier gris (< 222) ou éclairage irrégulier → **nettoyage du fond** : division par le fond estimé, papier vers 240 ; on n'ajoute alors que du contraste local (le contraste global brûlerait le papier) |
 | `tonal_range` | 98e − 2e centile | < 90 (ou < 120 si Gemma le signale) → contraste modéré |
 | `illumination_unevenness` | écart relatif du fond papier estimé | > 0,30 (ou > 0,18 si Gemma signale une ombre) → correction des ombres |
 | `noise_sigma` | bruit de luminance (Immerkær, pleine résolution) | > 3 (ou > 1,8 si signalé) → débruitage léger |
 | `sharpness` | variance du Laplacien | < 40 : flou fort → vérification, aucune « restauration » ; 40 à 150 et signalé → netteté modérée |
 | `colorfulness` | indice de Hasler et Süsstrunk | > 15 : page colorée → aucune balance des blancs automatique |
-| `dark_edges` | largeur de la bande de fond sur chaque bord | 0,1 à 8 % → rognage de ce bord (+0,4 %) ; ≥ 8 % → contour douteux, vérification |
+| `dark_edges` | largeur du fond resté sur chaque bord : bande sombre (≤ 8 %), rangées sans couleur papier (≤ 2,5 %), tranches d'autres pages au-delà d'une ligne de bord continue (≤ 4 %) | rognage de ce bord (+0,4 %) ; ≥ 8 % → contour douteux, vérification |
 | `border_content` | encre dans la bande de 1 % des bords | contenu peut-être coupé → vérification |
 | `residual_skew_deg` | inclinaison mesurée (profil de projection) | contrôle |
 

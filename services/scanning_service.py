@@ -137,6 +137,34 @@ def load_ocr(project: Project, record: ScanPageRecord) -> OcrResult | None:
     return OcrResult.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+# --------------------------------------------------------------------------- import d'un livre
+
+
+def create_book(name: str, languages: list[str]) -> Project:
+    """Nouveau livre (projet) pour la numérisation."""
+    if not name.strip():
+        raise ProcessingError("Donnez un nom au livre.")
+    return project_service.create_project(name.strip(), languages=languages or ["fra"])
+
+
+def import_book_files(project: Project, files: list[tuple[str, bytes]]):
+    """Importe des photos téléversées dans l'ordre naturel des noms (p2 avant p10) puis met la file à jour."""
+    ordered = sorted(files, key=lambda item: project_service._natural_key(Path(item[0])))
+    report = project_service.import_files(project, ordered)
+    sync_queue(project)
+    return report
+
+
+def import_book_folder(project: Project, folder: str | Path):
+    """Importe toutes les photos d'un dossier local (une à la fois, ordre naturel) puis met la file à jour."""
+    paths = project_service.collect_import_paths(Path(folder).expanduser())
+    if not paths:
+        raise ProcessingError("Aucune photo importable dans ce dossier.", detail=str(folder))
+    report = project_service.import_paths(project, paths)
+    sync_queue(project)
+    return report
+
+
 # --------------------------------------------------------------------------- file
 
 
@@ -494,9 +522,12 @@ def export_inputs(project: Project, *, include_unvalidated: bool = True) -> tupl
     return inputs, problems
 
 
-def export_book_pdf(project: Project, *, include_unvalidated: bool = True) -> tuple[SearchablePdfReport,
-                                                                                    SearchablePdfValidation]:
-    """Un PDF pour le livre : toutes les pages, dans l'ordre, sinon rien. Rapport de validation écrit à côté."""
+def export_book_pdf(project: Project, *, include_unvalidated: bool = True,
+                    uniform: bool = True) -> tuple[SearchablePdfReport, SearchablePdfValidation]:
+    """Un PDF pour le livre : toutes les pages, dans l'ordre, sinon rien. Rapport de validation écrit à côté.
+
+    uniform=True : pages PDF de même format, chaque page photographiée centrée (marge blanche).
+    """
     if not project.pages:
         raise ExportError("Le livre ne contient aucune page.")
     inputs, problems = export_inputs(project, include_unvalidated=include_unvalidated)
@@ -504,7 +535,7 @@ def export_book_pdf(project: Project, *, include_unvalidated: bool = True) -> tu
         shown = " ".join(problems[:5]) + (f" (+{len(problems) - 5} autres)" if len(problems) > 5 else "")
         raise ExportError("Export impossible : toutes les pages doivent être prêtes. " + shown)
     output = export_service.export_path(project, ".pdf", "numerisation")
-    report = pdf_export.build_searchable_pdf(inputs, output)
+    report = pdf_export.build_searchable_pdf(inputs, output, uniform=uniform)
     validation = pdf_export.validate_searchable_pdf(output, inputs)
     if report.page_count != len(project.pages):
         validation.issues.append(Issue(code="scan_pdf_page_count", severity=Severity.ERROR,
@@ -537,3 +568,55 @@ def book_overview(project: Project) -> list[dict]:
             "motifs": " ; ".join(record.review_reasons or ([record.error] if record.error else [])),
         })
     return rows
+
+
+_ADJUSTMENT_LABELS = {
+    "paper_whitening": "Fond nettoyé (papier éclairci et uniformisé)",
+    "shadow_correction": "Ombres atténuées",
+    "local_contrast": "Contraste local renforcé",
+    "denoise": "Bruit réduit",
+    "sharpness": "Netteté renforcée",
+}
+
+
+def describe_changes(project: Project, page: Page, record: ScanPageRecord) -> list[str]:
+    """Modifications réellement appliquées à la page, en phrases courtes (galerie de l'écran)."""
+    changes: list[str] = []
+    geometry = page.geometry
+    codes = {issue.code for issue in record.geometry_issues}
+    if geometry.manual_quad is not None:
+        changes.append("Recadrage manuel et perspective corrigée")
+    elif geometry.detected_quad is not None and geometry.auto_crop:
+        method = " (bords trouvés par la couleur du papier)" if "quad_from_paper" in codes else ""
+        changes.append(f"Bords détectés, fond retiré, perspective corrigée{method}")
+    else:
+        changes.append("Aucun bord fiable : photo entière conservée")
+    turns = geometry.effective_quarter_turns()
+    if turns:
+        changes.append(f"Rotation de {turns * 90}°")
+    if geometry.orientation_uncertain and not geometry.manual_quarter_turns:
+        changes.append("Orientation incertaine (non tournée)")
+    skew = geometry.effective_skew()
+    if abs(skew) >= 0.1:
+        changes.append(f"Inclinaison corrigée ({skew:+.1f}°)")
+    if geometry.dewarp_applied:
+        changes.append("Courbure des lignes corrigée")
+    adjustments = record.adjustments
+    if adjustments.has_crop:
+        changes.append("Bandes de fond rognées aux bords")
+    for field, label in _ADJUSTMENT_LABELS.items():
+        if getattr(adjustments, field):
+            changes.append(label)
+    if adjustments.exposure:
+        changes.append(f"Exposition ×{2 ** (adjustments.exposure / 50):.2f}")
+    if adjustments.contrast:
+        changes.append(f"Contraste {adjustments.contrast:+.0f}")
+    if adjustments.gamma != 1.0 or adjustments.brightness:
+        changes.append("Luminosité ajustée")
+    if adjustments.white_balance:
+        changes.append("Balance des blancs")
+    if record.final_source == "straightened":
+        changes.append("Amélioration écartée (dégradation mesurée)")
+    if record.quality is not None and record.quality.ocr_word_count is not None:
+        changes.append(f"Texte reconnu : {record.quality.ocr_word_count} mots (couche invisible)")
+    return changes

@@ -43,28 +43,26 @@ STRICT_DARK = 90.0                # luminance moyenne : page sous-exposée
 STRICT_BRIGHT = 225.0             # luminance moyenne : page surexposée...
 STRICT_BRIGHT_CLIP = 0.10         # ... avec beaucoup de blancs brûlés
 STRICT_LOW_RANGE = 90.0           # étendue tonale (98e − 2e centile) : contraste faible
-STRICT_GRAY_PAPER = 185.0         # clarté du papier (90e centile) : papier gris, photo sous-exposée
 STRICT_NOISE = 3.0                # écart-type du bruit de luminance (estimateur d'Immerkær)
 # Seuils de confirmation d'une action proposée par Gemma (plus souples, mais toujours mesurés).
 CONFIRM_UNEVENNESS = 0.18
 CONFIRM_DARK = 120.0
 CONFIRM_LOW_RANGE = 120.0
-CONFIRM_GRAY_PAPER = 205.0
 CONFIRM_NOISE = 1.8
 SHARPEN_MIN = 40.0                # sous ce Laplacien : flou fort, rien ne restaure les détails absents
 SHARPEN_MAX = 150.0               # au-dessus : déjà net, pas de renforcement
 COLORFUL_PAGE = 15.0              # indice de Hasler : page colorée, aucune correction qui atténue la couleur
 
 PAPER_MIN = 90.0                  # en dessous, la page n'a pas de papier clair (couverture, aplat sombre)
+PAPER_WHITE = 240.0               # clarté visée par le nettoyage du fond (texture du papier gardée)
+MAX_WHITENING_GAIN = 2.5
+WHITEN_BELOW = 222.0              # papier plus sombre : nettoyage du fond proposé
 COLORFUL_PAPER_MIN = 130.0        # page colorée : gain seulement si un vrai papier clair est mesuré
-PAPER_TARGET = 228.0              # clarté visée pour le papier (pas le blanc pur : texture conservée)
-MAX_EXPOSURE = 25.0               # gain maximal ≈ ×1,41
 EDGE_STRIP_MIN = 0.001            # bande de fond à rogner (fraction du côté)
 EDGE_STRIP_MAX = 0.08             # bande plus large : contour douteux, vérification plutôt que rognage
 EDGE_SAFETY = 0.004               # marge rognée en plus de la bande (transition floue fond / papier)
 
 # Valeurs appliquées (modérées et bornées)
-SHADOW_STRENGTH_MAX = 70.0
 GAMMA_DARK = 1.25
 GAMMA_BRIGHT = 0.85
 CONTRAST_STEP = 12.0
@@ -86,6 +84,26 @@ def crop_edges(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray:
     return rgb[y0:y1, x0:x1].copy()
 
 
+def whiten_paper(rgb: np.ndarray, strength: float) -> np.ndarray:
+    """Nettoyage du fond : gain local = (blanc visé / fond du papier estimé)^force, teinte conservée.
+
+    Le papier devient uniforme et clair (PAPER_WHITE) ; l'encre garde son contraste relatif ; sous une
+    illustration, le fond est interpolé depuis le papier voisin (image_service.paper_background) : les
+    couleurs des photographies ne sont pas délavées. Jamais de seuillage.
+    """
+    strength = float(np.clip(strength / 100.0, 0.0, 1.0))
+    if strength == 0.0:
+        return rgb.copy()
+    background = image_service.paper_background(rgb)
+    gain = np.power((PAPER_WHITE / 255.0) / background, strength, dtype=np.float32)
+    np.clip(gain, 1.0 / MAX_WHITENING_GAIN, MAX_WHITENING_GAIN, out=gain)
+    out = rgb.astype(np.float32)
+    out *= gain[..., None]
+    out += 0.5
+    np.clip(out, 0, 255, out=out)
+    return out.astype(np.uint8)
+
+
 def _exposure(rgb: np.ndarray, exposure: float) -> np.ndarray:
     """Gain de clarté 2^(exposure/50) appliqué aux trois canaux (teinte conservée), écrêté à 255."""
     gain = 2.0 ** (exposure / 50.0)
@@ -105,13 +123,15 @@ def _tone_lut(brightness: float, gamma: float) -> np.ndarray:
 def apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray:
     """Applique les réglages à une copie de la page redressée. Neutre = copie identique.
 
-    Ordre : rognage, ombres, balance des blancs et contraste (image_service.enhance), exposition, gamma et luminosité
+    Ordre : rognage, nettoyage du fond, ombres, balance des blancs et contraste (image_service.enhance), exposition, gamma et luminosité
     (même table sur les trois canaux : la teinte est conservée), débruitage, contraste local, netteté.
     Jamais de binarisation ni de conversion en gris.
     """
     if adjustments.is_neutral():
         return rgb.copy()
     out = crop_edges(rgb, adjustments) if adjustments.has_crop else rgb
+    if adjustments.paper_whitening:
+        out = whiten_paper(out, adjustments.paper_whitening)
     shadows = ImageEnhancement(enabled=True, white_balance="auto" if adjustments.white_balance else "none",
                                shadow_correction=adjustments.shadow_correction, contrast=adjustments.contrast)
     if not shadows.is_neutral():
@@ -163,45 +183,47 @@ def plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = No
             rejected.append(action)
         reasons.append(reason)
 
-    # Éclairage irrégulier et ombres
+    # Fond du papier : éclairage irrégulier (ombres) et papier gris corrigés ensemble (nettoyage du fond)
     shadow_proposed = bool(proposed & {ScanAction.SHADOW_CORRECTION, ScanAction.LIGHTING_CORRECTION}) or (
         analysis is not None and (analysis.shadow_level in (Level.MEDIUM, Level.HIGH)
-                                  or analysis.lighting_issue == LightingIssue.UNEVEN))
-    threshold = CONFIRM_UNEVENNESS if shadow_proposed else STRICT_UNEVENNESS
-    if metrics.illumination_unevenness > threshold:
-        strength = float(np.clip(metrics.illumination_unevenness * 150.0, 25.0, SHADOW_STRENGTH_MAX))
-        keep(ScanAction.SHADOW_CORRECTION, f"Éclairage irrégulier mesuré ({metrics.illumination_unevenness:.2f}).",
-             shadow_correction=round(strength))
-    elif shadow_proposed:
-        reject(ScanAction.SHADOW_CORRECTION, "Ombre signalée par Gemma mais non confirmée par la mesure du fond.")
-
-    # Exposition : papier gris (photo sous-exposée) ramené vers le blanc par un gain, teinte conservée
+                                  or analysis.lighting_issue in (LightingIssue.UNEVEN, LightingIssue.UNDEREXPOSED)))
+    has_paper = metrics.paper_level >= PAPER_MIN and (not colorful or metrics.paper_level >= COLORFUL_PAPER_MIN)
+    uneven = metrics.illumination_unevenness > (CONFIRM_UNEVENNESS if shadow_proposed else STRICT_UNEVENNESS)
+    gray = metrics.paper_level < WHITEN_BELOW
     dark_proposed = analysis is not None and analysis.lighting_issue == LightingIssue.UNDEREXPOSED
-    has_paper = metrics.paper_level >= PAPER_MIN
-    gray_limit = CONFIRM_GRAY_PAPER if dark_proposed else STRICT_GRAY_PAPER
-    if has_paper and metrics.paper_level < gray_limit and (
-            not colorful or dark_proposed or metrics.paper_level >= COLORFUL_PAPER_MIN):
-        gain = min(PAPER_TARGET / metrics.paper_level, 2.0 ** (MAX_EXPOSURE / 50.0))
+    if has_paper and (uneven or gray):
+        detail = []
+        if uneven:
+            detail.append(f"éclairage irrégulier {metrics.illumination_unevenness:.2f}")
+            actions.append(ScanAction.SHADOW_CORRECTION)
+        if gray:
+            detail.append(f"papier gris {metrics.paper_level:.0f}/255")
         keep(ScanAction.LIGHTING_CORRECTION,
-             f"Papier sous-exposé (clarté {metrics.paper_level:.0f}/255) : gain ×{gain:.2f}.",
-             exposure=round(50.0 * float(np.log2(gain)), 1))
+             f"Fond nettoyé et éclairci vers {PAPER_WHITE:.0f} ({', '.join(detail)}).", paper_whitening=100.0)
     elif not has_paper and metrics.brightness < STRICT_DARK and dark_proposed:
         keep(ScanAction.LIGHTING_CORRECTION, f"Page sombre (luminance moyenne {metrics.brightness:.0f}).",
              gamma=GAMMA_DARK)
     elif metrics.brightness > STRICT_BRIGHT and metrics.bright_clip > STRICT_BRIGHT_CLIP:
         keep(ScanAction.LIGHTING_CORRECTION, f"Page surexposée (luminance moyenne {metrics.brightness:.0f}).",
              gamma=GAMMA_BRIGHT)
-    elif dark_proposed:
-        reject(ScanAction.LIGHTING_CORRECTION, "Sous-exposition signalée par Gemma mais non mesurée.")
-    elif not has_paper:
-        reasons.append("Pas de papier clair mesuré (couverture ou aplat sombre) : exposition laissée telle quelle.")
+    elif shadow_proposed:
+        reject(ScanAction.SHADOW_CORRECTION, "Ombre ou sous-exposition signalée par Gemma mais non mesurée.")
+    if not has_paper and metrics.paper_level < PAPER_MIN:
+        reasons.append("Pas de papier clair mesuré (couverture ou aplat sombre) : fond laissé tel quel.")
 
     # Contraste (étendue tonale de l'intérieur de la page)
     contrast_proposed = ScanAction.CONTRAST_ADJUSTMENT in proposed or (
         analysis is not None and analysis.contrast_level == ContrastLevel.LOW)
-    if has_paper and metrics.tonal_range < (CONFIRM_LOW_RANGE if contrast_proposed else STRICT_LOW_RANGE):
+    whitened = bool(values.get("paper_whitening"))
+    # Après nettoyage du fond, l'étendue tonale grandit avec le gain du papier : on juge celle attendue, et
+    # seul le contraste local (qui protège le papier) est ajouté, sinon le papier déjà clair serait brûlé.
+    expected_range = metrics.tonal_range * (min(MAX_WHITENING_GAIN, PAPER_WHITE / max(metrics.paper_level, 1.0))
+                                            if whitened else 1.0)
+    if has_paper and expected_range < (CONFIRM_LOW_RANGE if contrast_proposed else STRICT_LOW_RANGE):
+        settings = {"local_contrast": LOCAL_CONTRAST_STEP} if whitened else {
+            "contrast": CONTRAST_STEP, "local_contrast": LOCAL_CONTRAST_STEP}
         keep(ScanAction.CONTRAST_ADJUSTMENT, f"Contraste faible mesuré (étendue tonale {metrics.tonal_range:.0f}).",
-             contrast=CONTRAST_STEP, local_contrast=LOCAL_CONTRAST_STEP)
+             **settings)
     elif contrast_proposed:
         reject(ScanAction.CONTRAST_ADJUSTMENT, "Faible contraste signalé par Gemma mais non mesuré.")
 
