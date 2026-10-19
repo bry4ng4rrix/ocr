@@ -27,6 +27,8 @@ page = st.navigation(
                     url_path="correction"),
             st.Page(common.SCREEN_PROCESSING, title="Traitement OCR", icon=":material/document_scanner:",
                     url_path="traitement"),
+            st.Page(common.SCREEN_LIVE_PREVIEW, title="Aperçu en direct", icon=":material/visibility:",
+                    url_path="apercu-live"),
         ],
         "Mise en page": [
             st.Page(common.SCREEN_EDITOR, title="Éditeur de page", icon=":material/edit_document:",

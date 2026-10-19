@@ -178,6 +178,7 @@ with preview_column:
                 common.show_issues(preview_issues)
     except BookOcrError as error:
         st.error(error.user_message)
+    st.page_link(common.SCREEN_LIVE_PREVIEW, label="Aperçu en direct (page blanche)", icon=":material/visibility:")
 
 # --------------------------------------------------------------------------- choix du bloc
 
