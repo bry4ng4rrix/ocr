@@ -4,6 +4,15 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Ajouté — 2026-10-19 (gestion des projets, statistiques et prix)
+- Tableau de bord :
+  - modifier un projet (nom, auteur, pages attendues, langues), via `project_service.update_project_details` ;
+  - le mettre à la corbeille (déplacement dans `data/trash/projects/`, rien n'est effacé ; refusé pendant un traitement) ;
+  - le restaurer depuis la corbeille. L'état de la file de numérisation est reconstruit d'après les résultats enregistrés.
+- Type de chaque page numérisée : texte seul, avec image(s) ou couverture avec image (`scanning_service.classify_page`). Il est détecté sur l'image finale et corrigible à la main dans « Retouche d'une page ».
+- Numérisation intelligente, section 6 « Statistiques et prix » : pages terminées par type, montant par type, total des pages et total des prix.
+- Onglet « Prix » (`components/screens/pricing.py`, `services/pricing_service.py`, `data/pricing.json`) : prix par type de page, monnaie, montant par livre et pour tous les livres.
+
 ### Corrigé — 2026-10-19 (cadrage des pages sombres)
 - Une couverture ou une page sombre (photo pleine page) sur le banc noir n'était pas détectée : la photo entière était gardée. Ajout de `page_bounds.detect_line_quad`, troisième recours après les deux autres détecteurs. Il cherche une paire de bords haut et bas alignés, prend les bords latéraux sur les traits verticaux proches ou les relie entre les extrémités (bord invisible sur fond noir), et refuse un contour qui englobe du fond (bande intérieure sombre et neutre) ou qui n'est pas posé sur un fond sombre.
 - Le secours « couleur du papier » est réservé aux papiers clairs. Pages sans papier clair : ni rognage des bords ni fausse alerte « bande sombre » ou « encre au bord ».

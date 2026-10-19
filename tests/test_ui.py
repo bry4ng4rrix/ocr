@@ -27,7 +27,9 @@ pytestmark = pytest.mark.ui
 APP = str(ROOT / "app.py")
 SCREENS = [common.SCREEN_DASHBOARD, common.SCREEN_PAGES, common.SCREEN_CORRECTION, common.SCREEN_PROCESSING,
            common.SCREEN_LIVE_PREVIEW, common.SCREEN_EDITOR, common.SCREEN_TYPOGRAPHY, common.SCREEN_REVIEW,
-           common.SCREEN_EXPORT, common.SCREEN_PDF_SCAN, common.SCREEN_SMART_SCAN, common.SCREEN_PRICING]
+           common.SCREEN_EXPORT, common.SCREEN_SMART_SCAN, common.SCREEN_PRICING]
+# SCREEN_PDF_SCAN est retiré de la navigation par l'utilisateur (app.py, commit 076bef8) : il n'est plus
+# atteignable dans l'application ; ses services restent testés dans tests/test_pdf_scan_services.py.
 TIMEOUT = 180
 
 

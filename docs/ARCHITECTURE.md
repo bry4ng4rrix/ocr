@@ -417,3 +417,20 @@ Compléments v1.3 (19/10, pages sombres) : `orientation_service._detect_sheet` e
 3. `page_bounds.detect_line_quad`, bords droits alignés, seulement si aucun contour n'a été trouvé (code `quad_from_lines`).
 
 Règles : Gemma ne fixe jamais de coordonnées ni de rotation ; une orientation incertaine (OSD) ou contredite par Gemma passe la page en `REVIEW_REQUIRED` sans rotation ; `OLLAMA_AUTO_APPLY=false` (défaut) : le traitement applique le plan **mesuré** et range le plan Gemma dans `proposed_plan` (aperçu puis validation) ; `true` : le plan combiné est appliqué, les incertitudes passent en vérification. Les originaux ne sont jamais réécrits ; chaque réglage est un paramètre rejoué depuis la page redressée.
+
+
+## 9. Gestion des projets, statistiques et prix (19/10/2026)
+
+```python
+project_service.update_project_details(project_id, *, name, author=None, expected_page_count=None, languages=None) -> Project
+project_service.trash_project(project_id) -> str        # déplace data/projects/<id> vers data/trash/projects/<id>_<horodatage>
+project_service.list_trashed_projects() -> list[TrashedProject] ; project_service.restore_project(trash_name) -> Project
+scanning_service.delete_book(project_id) -> str         # refusé pendant un traitement ; retire les lignes scan_tasks
+scanning_service.restore_book(trash_name) -> Project    # reconstruit les états de file depuis les record.json
+scanning_service.classify_page(final_rgb) -> (PageKind, part_images)
+    # couverture : pas de papier clair (p90 < 90) ou images ≥ 60 % ; avec image(s) : images ≥ 3 % ; sinon texte seul
+scanning_service.set_page_kind(project, page_id, kind | None) ; scanning_service.book_statistics(project) -> BookScanStats
+pricing_service.load_prices() / save_prices(PricingSettings) ; pricing_service.estimate(stats, prices) -> BookPriceEstimate
+```
+
+Seules les pages `COMPLETED` (traitement fini, ou page à vérifier validée) sont comptées. Le type effectif est le type corrigé par l'utilisateur s'il existe, sinon le type détecté. Écrans : tableau de bord (gestion des projets), « Prix » (groupe Projet), section 6 de « Numérisation intelligente ».
