@@ -208,6 +208,7 @@ class AdjustmentPlan(BaseModel):
     rejected_actions: list[ScanAction] = Field(default_factory=list)   # proposées par Gemma, non confirmées
     reasons: list[str] = Field(default_factory=list)
     review_required: bool = False
+    review_reasons: list[str] = Field(default_factory=list)        # sous-ensemble de reasons
     source: AdjustmentSource = "measured"
 
 
@@ -236,7 +237,7 @@ class ImageMetrics(BaseModel):
     bright_clip: float                 # part des pixels de luminance >= 250
     colorfulness: float                # indice de Hasler et Süsstrunk (0 = gris)
     illumination_unevenness: float     # 0..1 : écart relatif du fond papier estimé (ombres, éclairage)
-    noise_sigma: float                 # bruit estimé (écart-type, niveaux de gris)
+    noise_sigma: float                 # bruit de luminance estimé (Immerkær, recadrage central pleine résolution)
     residual_skew_deg: float | None = None
     skew_reliable: bool = False
     border_content: float = 0.0        # 0..1 : part d'encre dans la bande de bord (contenu peut-être coupé)
@@ -248,7 +249,7 @@ class QualityCheck(BaseModel):
 
     before: ImageMetrics
     after: ImageMetrics
-    color_shift: float                 # ΔE76 moyen (Lab) entre avant et après, copies réduites
+    color_shift: float                 # dérive chromatique moyenne (a*b* de Lab) avant/après, copies réduites
     enhancement_degraded: bool = False   # vrai : l'amélioration est écartée, la page redressée est gardée
     passed: bool = False
     reasons: list[str] = Field(default_factory=list)

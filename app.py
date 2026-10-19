@@ -23,6 +23,8 @@ page = st.navigation(
             st.Page(common.SCREEN_PAGES, title="Pages", icon=":material/photo_library:", url_path="pages"),
         ],
         "Traitement": [
+            st.Page(common.SCREEN_SMART_SCAN, title="Numérisation intelligente", icon=":material/auto_awesome:",
+                    url_path="numerisation-intelligente"),
             st.Page(common.SCREEN_PDF_SCAN, title="Numérisation et amélioration PDF",
                     icon=":material/document_scanner:", url_path="numerisation-pdf"),
             st.Page(common.SCREEN_CORRECTION, title="Correction d'image", icon=":material/crop_rotate:",

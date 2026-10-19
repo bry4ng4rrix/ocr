@@ -54,3 +54,17 @@ Propriétaire : `integration-documentation`. Une limite est **constatée** (preu
 - L'ordre se modifie dans le tableau avant export. La suppression exige une case de confirmation.
 - Les images actives sont gardées dans l'état de session Streamlit jusqu'à sa réinitialisation ; pour de très gros lots, travailler par lots évite de conserver toutes les sources haute résolution en RAM.
 - Ollama est facultatif et requiert `OLLAMA_ENABLED=true`, `OLLAMA_BASE_URL` (par défaut `http://localhost:11434`) et `OLLAMA_VISION_MODEL` (par défaut `gemma3:4b`). Le modèle doit être installé séparément ; aucun téléchargement automatique n'est lancé.
+
+## Numérisation intelligente (constaté le 19/10/2026)
+
+| Limite | Effet | Contournement |
+|---|---|---|
+| Ollama tourne sur le CPU de ce poste (GPU 1050 Ti non utilisé, `size_vram: 0`) | Analyse Gemma de 113 à 117 s par page avec la consigne de production (mesuré sur 2 pages) : environ 270 h pour 8 400 pages | traitement sans IA par défaut (16,7 s/page mesurées) ; Gemma page par page sur les pages à vérifier ; serveur Ollama avec GPU |
+| gemma3:4b peu fiable sur ces pages (page à l'envers vue « none », `ROTATE` incohérent, `manual_review_required` contradictoire) | Une décision fondée sur Gemma seul serait fausse | Gemma propose, les mesures décident (D-16) ; un conflit d'orientation demande une confirmation, jamais une rotation |
+| Rapport largeur/hauteur après perspective = rapport **apparent** (arêtes maximales du quadrilatère, `orientation_service.warp_quad`) | Sous forte perspective, la page peut être un peu étirée (synthétique très déformé : 0,63 obtenu pour 0,70 réel) | photographier perpendiculairement (banc) ; estimation de focale à étudier |
+| Contour de feuille légèrement trop large sur le banc (bande noire d'environ 0,3 % sur un ou deux bords) | Liseré noir dans le PDF | rogné automatiquement par bord après mesure (`dark_edges`) ; bande ≥ 8 % : vérification |
+| Orientation des pages peu textuelles (graphique tourné, couverture à titre vertical) souvent incertaine | Page en `REVIEW_REQUIRED`, non tournée | rotation manuelle dans l'écran |
+| Courbure : homographie + correction prudente existante (D-11) | Une page très bombée reste déformée près de la reliure | signalée à la vérification ; nouvelle photo |
+| Images intermédiaires : `corrected/<page>.png` (environ 6 à 10 Mo pour une page de 20 Mpx recadrée) + `final.jpg` (1 à 2 Mo) | Environ 60 à 100 Go pour 8 400 pages (estimation à confirmer) | prévoir le disque ; tout est régénérable depuis les originaux et les paramètres |
+| Les pages supprimées gardent leur dossier `scan/<page>/` | Espace disque | sans effet fonctionnel ; nettoyage manuel |
+| L'écran `pdf_scan` (fac-similé de l'utilisateur) et `ollama_vision` restent séparés du nouveau module | Deux écrans de numérisation | à fusionner avec l'accord de l'utilisateur |

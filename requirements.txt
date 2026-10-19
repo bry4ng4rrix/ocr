@@ -10,7 +10,10 @@ pymupdf>=1.26,<2                # import PDF, rendu PDF, aperçu, validation (li
 # Tests
 pytest>=8                       # testé 9.1.1
 
+# Ollama : appelé en HTTP avec la bibliothèque standard (urllib) ; aucun paquet Python supplémentaire.
+
 # Dépendances système (hors pip) :
 #   tesseract (5.x) + données de langue : fra, eng, deu, osd…
 #   libreoffice (facultatif) : conversion DOCX -> PDF et contrôle du rendu
+#   ollama + modèle gemma3:4b (facultatif) : analyse visuelle des pages, installés par l'utilisateur
 # ATTENTION : ne pas installer le paquet pip « docx » (obsolète, conflit avec python-docx).

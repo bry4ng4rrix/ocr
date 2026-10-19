@@ -334,21 +334,27 @@ analyse_page(rgb: np.ndarray, cache_dir: Path, *, force: bool = False) -> Analys
 
 ```python
 measure(rgb: np.ndarray) -> ImageMetrics
+    # mesures tonales sur l'intérieur de la page (bandes de fond exclues) : clarté du papier (p90),
+    # étendue tonale (p98 − p2), écrêtage, couleur (Hasler), éclairage du fond, bruit (Immerkær),
+    # inclinaison résiduelle, encre au bord, largeur des bandes de fond par bord (dark_edges)
 compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics | None = None) -> QualityCheck
     # passed=False et enhancement_degraded=True si l'amélioration dégrade : netteté effondrée, écrêtage accru,
-    # dérive de couleur (ΔE) excessive, contraste effondré. Les scores ne suffisent pas à « prouver » un gain.
+    # dérive chromatique (a*b*) excessive, couleurs atténuées, contraste effondré, contenu apparu au bord.
+    # Un changement de clarté voulu (exposition) n'est pas une dérive. Les scores ne « prouvent » pas un gain.
 ```
 
 ### 8.5 `image_enhancement` (OCR et image) — transformations OpenCV/Pillow déterministes
 
 ```python
 apply_adjustments(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray
-    # copie ; neutre = identité ; réutilise image_service.enhance ; jamais de binarisation ni de passage en gris
+    # copie ; neutre = identité ; ordre : rognage par bord, ombres/contraste (image_service.enhance),
+    # exposition (gain), gamma et luminosité, débruitage/contraste local/netteté (image_service.enhance) ;
+    # jamais de binarisation ni de passage en gris
 plan_adjustments(metrics: ImageMetrics, analysis: VisualAnalysis | None = None) -> AdjustmentPlan
     # chaque action de Gemma n'est retenue que si une mesure la confirme ; sans analyse : mesures seules
     # (seuils plus stricts). Page correcte : plan neutre. ROTATE / PERSPECTIVE / DETECT_PAGE ne règlent rien
     # ici : ils deviennent des motifs de vérification (review_required) si la géométrie OpenCV ne les confirme pas.
-crop_inset(rgb: np.ndarray, fraction: float) -> np.ndarray
+crop_edges(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray   # crop_left/top/right/bottom
 ```
 
 ### 8.6 `pdf_export` (DOCX et PDF) — PDF fidèle recherchable
@@ -369,14 +375,22 @@ validate_searchable_pdf(path: Path, pages: list[SearchablePageInput], probes_per
 sync_queue(project: Project) -> None                     # une ligne scan_tasks par page, ordre = Project.pages
 load_record(project, page) -> ScanPageRecord ; save_record(project, record) -> None   # écriture atomique
 analyse(project, page_id, force: bool = False) -> ScanPageRecord          # Gemma sur la page redressée
-process_page(project, page_id, *, use_ai: bool | None = None, auto_apply: bool | None = None) -> ScanPageRecord
+process_page(project, page_id, *, use_ai: bool | None = None, auto_apply: bool | None = None,
+             redetect: bool = False, reanalyse: bool = False, regeometry: bool = False) -> ScanPageRecord
+    # la page redressée existante est réutilisée si la géométrie n'a pas changé ; le statut DOCX est conservé
     # géométrie -> (analyse) -> plan -> rendu final -> contrôle -> OCR ; état COMPLETED / REVIEW_REQUIRED / FAILED
 render_final(project, page_id, adjustments: ScanAdjustments, source: str = "manual") -> ScanPageRecord
+preview(project, page_id, adjustments, max_side=1400) -> (avant, après, QualityCheck)   # copie réduite, sans écriture
+auto_enhance(project, page_id) ; redetect_geometry(project, page_id) ; set_rotation(project, page_id, quarts)
 apply_proposal(project, page_id) -> ScanPageRecord ; restore_previous(project, page_id) ; reset_to_original(project, page_id)
 set_manual_quad(project, page_id, corners) -> ScanPageRecord                # recadrage manuel validé géométriquement
 validate_page(project, page_id, validated: bool = True) -> ScanPageRecord
 export_book_pdf(project, *, require_validation: bool = False) -> tuple[SearchablePdfReport, SearchablePdfValidation]
-scan_runner.start(project_id, page_ids | None, retry_failed: bool = False) ; cancel(project_id) ; is_running(project_id)
+book_overview(project) -> list[dict]                      # tableau de l'écran
+scan_runner.start(book_ids, page_ids=None, *, retry_failed=False, use_ai=None) ; cancel() ; is_running() ; status()
+    # un seul worker de numérisation par processus ; livres traités l'un après l'autre
 ```
+
+Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement).
 
 Règles : Gemma ne fixe jamais de coordonnées ni de rotation ; une orientation incertaine (OSD) ou contredite par Gemma passe la page en `REVIEW_REQUIRED` sans rotation ; `OLLAMA_AUTO_APPLY=false` (défaut) : le traitement applique le plan **mesuré** et range le plan Gemma dans `proposed_plan` (aperçu puis validation) ; `true` : le plan combiné est appliqué, les incertitudes passent en vérification. Les originaux ne sont jamais réécrits ; chaque réglage est un paramètre rejoué depuis la page redressée.

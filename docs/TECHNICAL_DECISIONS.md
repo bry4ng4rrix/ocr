@@ -88,3 +88,19 @@ Un thread par projet (pas de Celery ni de file externe). L'état est écrit dans
 ## D-15 — Débordement de texte — RETENUE
 
 En PDF, avec la politique `shrink`, la police est réduite par pas de 3 % jusqu'à 70 %. Au-delà, la boîte est prolongée vers le bas et le bloc est signalé. Avec la politique `report`, le bloc est seulement signalé. Le texte n'est jamais perdu. En DOCX, les cadres ont une hauteur « au moins » : un texte allongé reste visible mais peut chevaucher un bloc voisin.
+
+## D-16 — Numérisation intelligente : Gemma propose, les mesures décident — RETENUE
+
+- **Contexte** : le client veut un PDF fidèle (photographies traitées et OCR invisible) par livre ; Gemma 3:4b est installé localement (Ollama 0.40.6, exécuté sur CPU).
+- **Constats** (19/10/2026, pages réelles) : 63 à 117 s par analyse ; réponses souvent incohérentes (orientation, actions, type de page). Le schéma JSON imposé par `format` est respecté : la forme est fiable, le contenu ne l'est pas.
+- **Options** : (a) appliquer les recommandations de Gemma ; (b) ignorer Gemma ; (c) recommandations en liste blanche, retenues seulement si une mesure OpenCV les confirme (seuils plus souples que sans IA).
+- **Décision** : (c). La géométrie (coins, rotation) reste à OpenCV et Tesseract ; Gemma ne déclenche qu'une vérification. Par défaut (`OLLAMA_AUTO_APPLY=false`), le plan mesuré est appliqué et le plan combiné est proposé après aperçu.
+- **Autres choix** :
+  - module séparé de la reconstruction DOCX, qui réutilise projet, géométrie, OCR et SQLite ;
+  - PDF construit avec PyMuPDF, mot par mot (pas d'OCRmyPDF : absent, et il refait l'OCR et réencode) ;
+  - image finale en JPEG unique, insérée telle quelle ;
+  - file d'états dans SQLite (`scan_tasks`) et détails par page en JSON ;
+  - un seul worker de numérisation par processus.
+- **Conséquences** :
+  - le module fonctionne entièrement sans IA ;
+  - l'analyse Gemma est trop lente sur ce poste pour 8 400 pages : à réserver aux pages douteuses, ou à exécuter sur un serveur avec GPU.

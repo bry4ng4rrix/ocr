@@ -22,12 +22,14 @@ INK_RELATIVE = 0.6             # « encre » = pixel sous 60 % de la clarté du 
 MAX_SHARPNESS_LOSS = 0.55      # netteté après < 55 % de l'avant : l'image a été lissée
 MAX_CLIP_INCREASE = 0.04       # +4 points de pixels écrêtés (noir ou blanc) : détails perdus
 MIN_CONTRAST_RATIO = 0.6       # contraste après < 60 % de l'avant : page délavée
-MAX_COLOR_SHIFT = 12.0         # ΔE76 moyen : au-delà, les couleurs de la photographie ont dérivé
+MAX_COLOR_SHIFT = 8.0          # dérive chromatique moyenne (a*b*) : au-delà, les couleurs ont dérivé
 MAX_COLOR_LOSS = 0.5           # couleur après < 50 % de l'avant sur une page colorée
 COLORFUL_PAGE = 15.0           # indice de Hasler au-dessus duquel la page est jugée colorée
 MAX_BORDER_CONTENT = 0.06      # part d'encre dans la bande de bord : contenu peut-être coupé
 DARK_STRIP_RELATIVE = 0.45     # rangée de bord plus sombre que 45 % du papier : fond du banc, pas la page
 MAX_DARK_STRIP = 0.08          # une bande plus large n'est plus un simple reste de fond
+NOISE_WINDOW = 1024            # recadrage central (pixels) pour l'estimation du bruit
+NOISE_FLAT_PERCENTILE = 60     # pixels les moins contrastés retenus (les lettres sont exclues)
 INTERIOR_MARGIN = 0.01         # marge retirée en plus des bandes sombres pour les mesures tonales
 
 
@@ -47,13 +49,23 @@ def colorfulness(rgb: np.ndarray) -> float:
 
 
 def noise_sigma(gray: np.ndarray) -> float:
-    """Bruit estimé (écart-type) : MAD d'un passe-haut, sur les zones plates seulement."""
-    image = gray.astype(np.float32)
-    residual = image - cv2.medianBlur(gray, 3).astype(np.float32)
-    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
-    flat = gradient < np.percentile(gradient, 50)
-    values = residual[flat] if flat.sum() > 100 else residual.ravel()
-    return float(1.4826 * np.median(np.abs(values - np.median(values))))
+    """Bruit estimé (écart-type) par la méthode d'Immerkær, sur un recadrage central en pleine résolution.
+
+    Une réduction moyennerait le bruit : on mesure au pixel près. Les contours (lettres) sont exclus
+    par un seuil sur le gradient de Sobel.
+    """
+    height, width = gray.shape[:2]
+    side = NOISE_WINDOW
+    y0, x0 = max(0, (height - side) // 2), max(0, (width - side) // 2)
+    window = gray[y0:y0 + side, x0:x0 + side].astype(np.float32)
+    if min(window.shape) < 8:
+        return 0.0
+    kernel = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], np.float32)
+    response = np.abs(cv2.filter2D(window, -1, kernel))[1:-1, 1:-1]
+    gradient = cv2.magnitude(cv2.Sobel(window, cv2.CV_32F, 1, 0), cv2.Sobel(window, cv2.CV_32F, 0, 1))[1:-1, 1:-1]
+    flat = gradient <= np.percentile(gradient, NOISE_FLAT_PERCENTILE)
+    values = response[flat] if flat.sum() > 100 else response.ravel()
+    return float(np.sqrt(np.pi / 2.0) / 6.0 * values.mean())
 
 
 def illumination_unevenness(rgb: np.ndarray) -> float:
@@ -129,7 +141,7 @@ def measure(rgb: np.ndarray) -> ImageMetrics:
         bright_clip=round(float((inner >= 250).mean()), 4),
         colorfulness=round(colorfulness(inner_rgb), 2),
         illumination_unevenness=round(illumination_unevenness(inner_rgb), 4),
-        noise_sigma=round(noise_sigma(inner), 3),
+        noise_sigma=round(noise_sigma(interior(gray, edges)), 3),
         residual_skew_deg=None if skew.uncertain else skew.angle_deg,
         skew_reliable=not skew.uncertain,
         border_content=round(border_content(inner), 4),
@@ -138,7 +150,7 @@ def measure(rgb: np.ndarray) -> ImageMetrics:
 
 
 def color_shift(before: np.ndarray, after: np.ndarray) -> float:
-    """ΔE76 moyen (Lab) entre deux images ramenées à la même petite taille.
+    """Dérive chromatique moyenne (distance a*b* en Lab) entre deux images ramenées à la même petite taille.
 
     Si `after` a été rogné (crop_inset), la comparaison porte sur des copies redimensionnées : le léger
     décalage géométrique reste faible devant une vraie dérive de couleur sur des copies de 600 px.
@@ -155,7 +167,8 @@ def color_shift(before: np.ndarray, after: np.ndarray) -> float:
     # Flou léger : la netteté accrue ne doit pas compter comme une dérive de couleur.
     lab_before = cv2.GaussianBlur(lab_before, (0, 0), 2.0)
     lab_after = cv2.GaussianBlur(lab_after, (0, 0), 2.0)
-    return float(np.linalg.norm(lab_before - lab_after, axis=2).mean())
+    # Seule la chromaticité (a*, b*) compte : un changement de clarté voulu (exposition) n'est pas une dérive.
+    return float(np.linalg.norm(lab_before[..., 1:] - lab_after[..., 1:], axis=2).mean())
 
 
 def compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics | None = None) -> QualityCheck:
@@ -175,10 +188,10 @@ def compare(before: np.ndarray, after: np.ndarray, before_metrics: ImageMetrics 
     if first.contrast > 5 and second.contrast < MIN_CONTRAST_RATIO * first.contrast:
         degraded.append("Contraste effondré : page délavée.")
     if shift > MAX_COLOR_SHIFT:
-        degraded.append(f"Dérive de couleur excessive (ΔE moyen {shift:.1f}).")
+        degraded.append(f"Dérive de couleur excessive (écart chromatique moyen {shift:.1f}).")
     if first.colorfulness > COLORFUL_PAGE and second.colorfulness < MAX_COLOR_LOSS * first.colorfulness:
         degraded.append("Couleurs de la page fortement atténuées.")
-    if second.border_content > MAX_BORDER_CONTENT and second.border_content > first.border_content + 0.02:
+    if second.border_content > MAX_BORDER_CONTENT and second.border_content > first.border_content + 0.05:
         degraded.append("Du contenu apparaît au bord après rognage : il a peut-être été coupé.")
     if not degraded and first.border_content > MAX_BORDER_CONTENT:
         warnings.append("Contenu dense au bord de la page redressée : vérifiez que rien n'a été coupé.")

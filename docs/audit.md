@@ -334,3 +334,23 @@ Le prompt maître demande : *« Évaluer et intégrer PaddleOCR avec PP-Structur
 - [x] Toutes les 345 fonctionnalités et tests existants sont préservés sans aucune régression.
 - [x] Le rapport d'audit exhaustif `docs/audit.md` est rédigé et intégré au dépôt.
 - [x] Le plan de migration par étapes est établi, fondé sur le code existant sans réécriture globale destructive.
+
+---
+
+## 9. Audit complémentaire — module « Numérisation intelligente » (19/10/2026)
+
+Prompt maître « Ollama Gemma 3:4b, OpenCV, OCR et PDF recherchable ». Constats vérifiés avant développement :
+
+| Point | Constat | Décision |
+|---|---|---|
+| Point d'entrée | `app.py`, `st.navigation` (écrans dans `components/screens/`) | nouvel écran `smart_scan.py` dans le groupe Traitement ; pas de dossier `pages/` |
+| Traitement d'image | `orientation_service` (feuille, perspective, OSD, inclinaison, courbure), `image_service.enhance` (ombres, balance, contraste, CLAHE, bilatéral, netteté), `page_detection` + `image_enhancement` (écran `pdf_scan`, en cours chez l'utilisateur) | réutilisés ; aucun second service de traitement d'image ; `image_enhancement` étendu (plan et réglages bornés) |
+| OCR | Tesseract 5.5.3 (`ocr_service`, TSV avec boîtes et confiance, cache) ; `fra`, `deu`, `eng`, `afr`, `osd` | réutilisé ; PaddleOCR toujours impossible sous Python 3.14 (§3.2) |
+| Export PDF | `pdf_service` (reconstruction, fac-similé par blocs) ; `pdf_export.create_image_pdf` (image seule, sans OCR) | PDF fidèle ajouté dans `pdf_export` (mot à mot, JPEG inséré tel quel) ; OCRmyPDF non retenu (non installé, refait sa propre OCR et réencode) |
+| Stockage | `project.json` par livre ; SQLite `data/bookocr.db` (`repositories/`) | file `scan_tasks` dans la même base ; paramètres et résultats par page dans `scan/<page>/record.json` |
+| Ollama | 0.40.6 actif, `gemma3:4b` installé (Q4_K_M, 3,9 B, capacités `completion` + `vision`) ; **exécuté sur CPU** (`size_vram: 0`) | `format` = schéma JSON vérifié réellement ; aucune autre installation |
+| Ancien client Ollama | `ollama_service` (état), `ollama_vision` (écran `pdf_scan`, conseils non bornés par liste blanche) | `ollama_service` étendu (`chat_json`, `model_details`) ; `ollama_vision` laissé intact (utilisé par l'écran de l'utilisateur) |
+| Photos réelles | 11 photos de banc de numérisation 5568 × 3712 (vitre en V, fond noir, reflets de lampes, pages tournées de 90° ou 180°) | mesures calibrées sur ces photos |
+| Tests | 371 réussis avant modification | aucun test supprimé ni désactivé |
+
+Fonctionnalités préservées : reconstruction DOCX et PDF (3 modes), écrans existants, écran `pdf_scan` et ses services, traitement OCR en arrière-plan, originaux en lecture seule.

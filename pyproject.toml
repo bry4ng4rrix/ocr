@@ -13,6 +13,7 @@ markers = [
     "libreoffice: nécessite soffice (LibreOffice headless)",
     "real_images: utilise les photos réelles hors dépôt (BOOKOCR_REAL_PAGES)",
     "ui: test de l'interface Streamlit (AppTest)",
+    "ollama: appelle le vrai serveur Ollama local (BOOKOCR_TEST_OLLAMA=1, gemma3:4b installé)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:docx.*",

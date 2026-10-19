@@ -15,3 +15,6 @@ workspace/
 
 # Données de travail (projets, photos importées, exports) : jamais versionnées
 data/
+
+# Réglages locaux (peut contenir une clé Gemini)
+.env
