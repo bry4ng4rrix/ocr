@@ -92,7 +92,7 @@ docs/                        documentation technique
 data/projects/<project_id>/
   project.json               modèle Project complet (schema_version), écriture atomique
   project.json.bak           version précédente
-  originals/<page_id>.<ext>  fichiers importés, jamais modifiés (empreinte SHA-256 dans Page)
+  originals/<sha256[:16]>.<ext>  fichiers importés, stockés une fois, jamais réécrits (un PDF/TIFF multi-pages sert plusieurs pages)
   corrected/<page_id>.png    image après correction géométrique (régénérable)
   enhanced/<page_id>.png     image après réglages d'amélioration (régénérable, absente si réglages neutres)
   ocr_input/<page_id>.png    image envoyée à l'OCR (régénérable)
@@ -100,9 +100,11 @@ data/projects/<project_id>/
   backgrounds/<page_id>.png  fond de page reconstruit (texte effacé) pour les modes fidélité/hybride
   thumbs/<page_id>.jpg       vignettes
   cache/ocr/<clé>.json       résultats OCR (clé = image + langues + psm + version)
+  ocr/<page_id>.json         dernier résultat OCR de la page (entrée de l'analyse de mise en page)
   history/<page_id>/<horodatage>.json   versions précédentes de la page (bornées)
   exports/                   DOCX, PDF et rapports de validation JSON
-  trash/                     pages supprimées (fichiers déplacés, récupérables)
+  trash/<page_id>/           pages supprimées ou sources remplacées (page.json + fichiers dérivés), récupérables
+  project.json.corrupted     copie d'un project.json illisible (diagnostic), le .bak ayant été rouvert
   job.json                   état du traitement en arrière-plan
 ```
 
@@ -124,9 +126,10 @@ Signatures v1. `→` = valeur de retour. Les erreurs levées sont des sous-class
 ### 5.1 `project_service` (intégration)
 
 ```python
-create_project(name: str, languages: list[str], root: Path = DATA_DIR) -> Project
-list_projects(root: Path = DATA_DIR) -> list[ProjectSummary]
-open_project(project_id: str, root: Path = DATA_DIR) -> Project            # ProjectNotFoundError, ProjectCorruptedError
+project_dir(project_or_id) -> Path ; project_lock(project_id) -> threading.RLock   # verrou unique des écritures
+create_project(name: str, languages: list[str] | None = None) -> Project
+list_projects() -> list[ProjectSummary]
+open_project(project_id: str) -> Project            # ProjectNotFoundError, ProjectCorruptedError
 save_project(project: Project) -> None                                      # atomique ; .bak ; met à jour updated_at
 import_files(project: Project, files: list[tuple[str, bytes]], position: int | None = None) -> ImportReport
     # formats : jpg/jpeg/png/tif/tiff (multi-pages)/pdf ; taille et pixels bornés ; doublons (SHA-256 + index) ignorés et signalés
@@ -134,10 +137,12 @@ replace_page_source(project: Project, page_id: str, name: str, data: bytes) -> P
 delete_pages(project: Project, page_ids: list[str]) -> None                 # fichiers déplacés dans trash/, pas effacés
 reorder_pages(project: Project, ordered_ids: list[str]) -> None
 set_manual_rotation(project: Project, page_id: str, quarter_turns: int) -> Page
-snapshot_page(project: Project, page_id: str, reason: str) -> None          # appelé avant toute modification utilisateur
+snapshot_page(project: Project, page_id: str, reason: str) -> str (id de version)         # appelé avant toute modification utilisateur
 list_page_versions(project: Project, page_id: str) -> list[PageVersion]
 restore_page_version(project: Project, page_id: str, version_id: str) -> Page
 page_paths(project: Project, page: Page) -> PagePaths                       # chemins absolus de toutes les versions d'image
+update_page(project, page, reason=None) -> None                              # API des éditeurs (instantané si reason)
+should_autosave(project, last_saved_monotonic, now_monotonic) -> bool ; load_thumbnail ; load_original
 ```
 
 ### 5.2 `processing_service` (intégration)

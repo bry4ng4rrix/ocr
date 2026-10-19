@@ -45,10 +45,11 @@ Format : contexte → options → décision → conséquences. États : `PROPOS�
 
 Règles communes : une page source = une section DOCX = une page PDF (mode page par page) ; aucun mode ne remplace du texte par une image ; le cas A n'a jamais de fond photographique.
 
-## D-07 — Positionnement absolu dans Word : cadres `w:framePr` ou zones de texte DrawingML — À VÉRIFIER
+## D-07 — Positionnement absolu dans Word : cadres `w:framePr` ou zones de texte DrawingML — RETENUE (cadres)
 
 - **Options** : (a) paragraphe dans un cadre (`w:framePr`) : simple, du vrai texte de paragraphe, relu par LibreOffice et Word ; (b) zone de texte DrawingML (`wps:wsp` dans `mc:AlternateContent` avec repli VML) : plus riche, mais XML lourd et rendu LibreOffice variable.
-- **Décision provisoire** : (a). **Spike T-30** : générer les deux variantes, les convertir avec LibreOffice et comparer positions et débordements. Décision définitive selon le résultat.
+- **Spike T-30 (16/10/2026, sans LibreOffice)** : les deux variantes sont des DOCX valides relus par python-docx. Avec un cadre, le texte est un vrai paragraphe du corps (vu par `document.paragraphs` et par `check_docx.py`). Avec une zone de texte `wps`, le texte est **invisible** pour python-docx, il est dupliqué (DrawingML + repli VML) et la validation échoue.
+- **Décision** : (a), cadres `w:framePr` (`hAnchor/vAnchor="page"`, hauteur `atLeast` pour ne jamais masquer un texte allongé, `wrap="none"` en fidélité, `around` en hybride). État : **RETENUE** ; la comparaison de rendu Word/LibreOffice reste à faire quand LibreOffice sera installé (T-53).
 
 ## D-08 — Une seule composition pour l'aperçu et les exports — RETENUE
 
@@ -79,3 +80,11 @@ Un thread par projet (pas de Celery ni de file externe). L'état est écrit dans
 - Le skill de revue s'appelle **`project-code-review`** et non `code-review`. D'après la documentation, un skill de projet `code-review` **remplace** la commande intégrée `/code-review`. L'utilisateur la perdrait.
 - Sous-agents : outils `Read, Grep, Glob, Bash, Edit, Write`, sans `Agent` (pas de délégation en cascade : l'agent principal coordonne). Les skills utiles sont préchargés par le champ `skills`.
 - Aucune règle de permission n'a été ajoutée à `.claude/settings.json` : les permissions de l'utilisateur ne sont pas élargies sans demande.
+
+## D-14 — Convention d'interligne et d'espacement — RETENUE
+
+`ResolvedStyle.line_spacing` est un **multiple de l'interligne simple de la police** (convention Word). Le PDF le multiplie par l'interligne naturel de la police (≈ 1,149 pour Liberation Serif). Les espacements avant/après ne sont pas réappliqués dans les boîtes du PDF, puisque les positions les contiennent déjà. Dans le DOCX en flux, l'espace avant vaut `gap_before_pt` et l'espace après vaut 0 (Word additionne les deux).
+
+## D-15 — Débordement de texte — RETENUE
+
+En PDF, avec la politique `shrink`, la police est réduite par pas de 3 % jusqu'à 70 %. Au-delà, la boîte est prolongée vers le bas et le bloc est signalé. Avec la politique `report`, le bloc est seulement signalé. Le texte n'est jamais perdu. En DOCX, les cadres ont une hauteur « au moins » : un texte allongé reste visible mais peut chevaucher un bloc voisin.

@@ -38,14 +38,8 @@ ALL_STEPS = (Step.GEOMETRY, Step.ENHANCE, Step.OCR, Step.LAYOUT)
 STEP_LABELS = {Step.GEOMETRY: "Correction géométrique", Step.ENHANCE: "Amélioration de l'image",
                Step.OCR: "Reconnaissance du texte", Step.LAYOUT: "Mise en page et images"}
 
-_project_locks: dict[str, threading.RLock] = {}
-_locks_guard = threading.Lock()
-
-
-def project_lock(project_id: str) -> threading.RLock:
-    """Verrou partagé par l'interface et le traitement pour les écritures de project.json."""
-    with _locks_guard:
-        return _project_locks.setdefault(project_id, threading.RLock())
+# Verrou unique par projet, partagé avec project_service.save_project et l'interface.
+project_lock = project_service.project_lock
 
 
 # --------------------------------------------------------------------------- fichiers de travail

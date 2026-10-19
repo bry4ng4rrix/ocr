@@ -30,7 +30,13 @@ Propriétaire : `integration-documentation`. Une limite est **constatée** (preu
 - La police, la taille, le gras et l'italique sont **estimés**. La typographie exacte du livre n'est pas identifiée, mais tout reste modifiable.
 - Le format physique de la page est estimé à partir du ratio et de la taille du corps de texte. Il faut le vérifier.
 
-## DOCX : Word et LibreOffice (attendu, spike T-30)
+## DOCX : Word et LibreOffice (spike T-30 fait sans LibreOffice ; rendu à confirmer)
+
+- **Constaté** : une zone de texte DrawingML (`wps`) est invisible pour python-docx. C'est pourquoi les cadres `w:framePr` ont été retenus (D-07).
+- **Attendu** : les noms de styles « Titre 1 » et « Légende » sont aussi les noms affichés des styles intégrés de Word en français. Des doublons peuvent apparaître dans la galerie de styles.
+- **Attendu** : Word fusionne deux paragraphes consécutifs dont les cadres sont identiques. LibreOffice peut laisser un paragraphe d'ancrage vide par cadre, avec un risque de page supplémentaire en mode fidélité. Le test de conversion compare le nombre de pages (T-53).
+- **Attendu** : l'interligne « multiple » dépend des métriques de police, que Word et LibreOffice ne lisent pas de la même façon. En mode modifiable, le texte peut refluer et ajouter une page, ce qui ne se détecte qu'au rendu.
+- Le numéro de page est gardé comme texte imprimé, pas comme champ PAGE. Les puces sont des caractères littéraux, pas une numérotation Word.
 
 - Les cadres (`w:framePr`) et les images ancrées sont rendus avec de légers décalages selon le logiciel. Le mode `fidelity` est le plus sensible.
 - Un cadre de hauteur exacte coupe le texte ajouté par l'utilisateur. La hauteur « au moins » fait déborder sur les blocs voisins. Le rapport d'export signale les blocs concernés.

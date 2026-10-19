@@ -405,11 +405,13 @@ def white_balance_gains(rgb: np.ndarray) -> tuple[float, float, float]:
 
 
 def _tone_table(settings: ImageEnhancement, gains: tuple[float, float, float]) -> np.ndarray:
-    """Table 256 × 1 × 3 (uint8) : balance des blancs, luminosité, contraste."""
+    """Table 256 × 1 × 3 (uint8) : balance des blancs, luminosité (gamma), contraste."""
     base = np.arange(256, dtype=np.float32) / 255.0
     table = np.stack([base * gain for gain in gains], axis=-1)[:, None, :]
     if settings.brightness:
-        table += settings.brightness / 100.0 * 0.25
+        # Courbe gamma : les tons moyens bougent, le blanc du papier et le noir restent en place.
+        np.clip(table, 0.0, 1.0, out=table)
+        table = np.power(table, 2.0 ** (-settings.brightness / 60.0))
     if settings.contrast:
         factor = 2.0 ** (settings.contrast / 50.0)       # × 4 à +100, × 0,25 à -100
         table = (table - 0.5) * factor + 0.5

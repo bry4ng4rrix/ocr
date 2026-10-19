@@ -79,9 +79,10 @@ def export_docx(project: Project, mode: ReconstructionMode | None = None,
 
 def _check_docx(inspection, pages: list[ComposedPage]) -> list[Issue]:
     issues = []
-    if inspection.sections != len(pages):
+    # les sections continues de colonnes ne comptent pas : une section « de page » par page source
+    if inspection.page_sections != len(pages):
         issues.append(Issue(code="docx_section_count", severity=Severity.ERROR,
-                            message=f"Le DOCX contient {inspection.sections} sections pour {len(pages)} pages."))
+                            message=f"Le DOCX contient {inspection.page_sections} pages pour {len(pages)} attendues."))
     expected_text = sum(len(page.text_elements) for page in pages)
     if expected_text and inspection.non_empty_paragraphs == 0 and inspection.frames == 0:
         issues.append(Issue(code="docx_no_text", severity=Severity.ERROR,
