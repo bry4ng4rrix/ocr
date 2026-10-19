@@ -19,6 +19,7 @@ import config
 from models.errors import FileTooLargeError, ImageReadError, ProtectedPathError, UnsupportedFileError
 from models.geometry import Box
 from models.page import ImageEnhancement
+from models.quality import ImageQualityMetrics
 
 Image.MAX_IMAGE_PIXELS = config.MAX_IMAGE_PIXELS
 ORIGINALS_DIRNAME = "originals"
@@ -589,3 +590,39 @@ def erase_text_regions(rgb: np.ndarray, boxes: list[Box], method: Literal["inpai
         region = mask.astype(bool)
         out[y0:y1, x0:x1][region] = patch[region]
     return out
+
+
+def estimate_image_quality(image: np.ndarray) -> ImageQualityMetrics:
+    """Mesure la netteté (Laplacien), le contraste, l'exposition et les reflets d'une photographie smartphone."""
+    gray = to_gray(image) if image.ndim == 3 else image.copy()
+    if max(gray.shape) > 1200:
+        gray = downscale(gray, 1200)[0]
+
+    laplacian_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    mean_lum = float(gray.mean())
+    std_lum = float(gray.std())
+    glare_ratio = float((gray > 250).mean())
+
+    is_blurry = laplacian_var < 60.0
+    is_underexposed = mean_lum < 70.0
+    is_overexposed = mean_lum > 225.0 or glare_ratio > 0.08
+
+    sharpness_norm = min(1.0, laplacian_var / 300.0)
+    contrast_norm = min(1.0, std_lum / 60.0)
+    exposure_penalty = max(0.0, 1.0 - abs(mean_lum - 160.0) / 100.0)
+    glare_penalty = max(0.0, 1.0 - glare_ratio * 5.0)
+
+    overall = (sharpness_norm * 40.0 + contrast_norm * 25.0 + exposure_penalty * 25.0 + glare_penalty * 10.0)
+    overall_score = round(max(0.0, min(100.0, overall)), 1)
+
+    return ImageQualityMetrics(
+        sharpness_score=round(laplacian_var, 1),
+        mean_luminance=round(mean_lum, 1),
+        contrast=round(std_lum, 1),
+        glare_ratio=round(glare_ratio, 3),
+        is_blurry=is_blurry,
+        is_underexposed=is_underexposed,
+        is_overexposed=is_overexposed,
+        overall_score=overall_score,
+    )
+

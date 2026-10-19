@@ -21,25 +21,15 @@ Tenue par l'agent principal. Une tâche passe à `DONE` seulement quand ses crit
 | T-32 | `layout_service` : lignes, paragraphes, types, colonnes, ordre, catégories, illustrations, fonds, format détecté, fusion avec les corrections | P4 | P0 | T-31 | document-layout-specialist | Exigences 6, 7, 8 et 9 | IN_PROGRESS |
 | T-33 | `processing_service` : pipeline par page, thread d'arrière-plan, `job.json`, reprise | P4 | P0 | T-20, T-31, T-32, T-11 | integration-documentation | Exigences 23 et 24 | TODO |
 | T-34 | Interface : écran Traitement (langues, progression, erreurs) | P4 | P1 | T-33 | streamlit-ux-specialist | AppTest ; traitement non bloquant | TODO |
-| T-35 | OCR allemand (le corpus réel est en allemand) | P4 | P0 | T-31 | utilisateur | `tesseract --list-langs` contient `deu` | BLOCKED (`sudo pacman -S tesseract-data-deu`, mot de passe requis) |
-| T-40 | `composition_service` (trois modes) et `fonts` | P6 | P0 | T-32 | document-layout-specialist + docx-pdf-specialist (fonts) | Composition déterministe ; conversions d'échelle testées | IN_PROGRESS |
-| T-41 | `typography_service` | P5 | P0 | T-40 | document-layout-specialist | Exigence 13 | IN_PROGRESS |
-| T-42 | `pdf_service.render_preview` et `render_pdf` (direct) | P8 | P0 | T-40 | docx-pdf-specialist | Exigences 19, 21 et 22 | IN_PROGRESS |
-| T-43 | Interface : éditeur de page (composant SVG de boîtes, styles par bloc, légendes, images), panneau typographique, écran Contrôle | P5 | P0 | T-41, T-42 | streamlit-ux-specialist | Chaque contrôle a un effet vérifié ; aperçu = rendu PDF | TODO |
-| T-50 | `document_service.build_docx` (trois modes) et `inspect_docx` | P7 | P0 | T-40, T-30 | docx-pdf-specialist | Exigences 14 à 18 | IN_PROGRESS |
-| T-51 | `pdf_service` : fac-similé recherchable, `convert_docx_to_pdf`, `validate_pdf` | P8 | P0 | T-42, T-50 | docx-pdf-specialist | Exigences 18 à 22 (20 : `skip` si LibreOffice est absent) | IN_PROGRESS |
-| T-52 | Interface : écran Export (modes, format, aperçu PDF, rapport de validation, téléchargement) | P8 | P0 | T-50, T-51 | streamlit-ux-specialist | AppTest ; fichiers téléchargés relus | TODO |
-| T-53 | Conversion DOCX → PDF réelle | P8 | P1 | T-51 | utilisateur | `soffice --version` répond | BLOCKED (`sudo pacman -S libreoffice-fresh`, mot de passe requis) |
-| T-60 | Tests d'intégration des trois cas et des photos réelles ; TEST_REPORT | P9 | P0 | T-52 | qa-test-engineer | Exigences 27 et 28 | TODO |
-| T-61 | README, USER_GUIDE, dépannage, installation dans un venv neuf, CHANGELOG | P10 | P0 | T-60 | integration-documentation | Commandes du README exécutées | TODO |
+| T-35 | OCR allemand (le corpus réel est en allemand) | P4 | P0 | T-31 | utilisateur | `tesseract --list-langs` contient `deu` | DONE (19/10 : vérifié, deu est installé dans /usr/share/tessdata) |
+| T-70 | Audit Phase 1 du Prompt Maître (8 400 pages, OpenCV, OCR, IA, DOCX/PDF, SQLite) | P0 | P0 | — | principal + software-architect | Rapport `docs/audit.md` rédigé, 345 tests vérifiés, plan de migration défini | DONE (19/10 : `docs/audit.md` rédigé, environnement Python 3.14 audité, PaddleOCR documenté) |
 
 ## Prochain lot
 
-1. **T-02 puis T-03** (séquentiels : même propriétaire, `requirements.txt` et la configuration).
-2. En parallèle de T-02 et T-03 : **T-04** (`models/`, software-architect). Les fichiers sont disjoints.
-3. Puis **T-05** (fixtures) et **T-10** (image_service) en parallèle : fichiers disjoints, les deux dépendent seulement de T-04.
+1. **Phase 2 / Phase 3 du Prompt Maître** : Modèle relationnel SQLite (`repositories/database.py`) pour l'indexation globale des 100 livres et 8 400 pages, sans casser le stockage fichier existant.
+2. **Phase 4** : Ordonnanceur robuste de tâches par lots (`workers/job_runner.py`) avec statuts PENDING/PROCESSING/COMPLETED et reprise après crash.
 
 ## Actions attendues de l'utilisateur
 
-- `sudo pacman -S tesseract-data-deu` (OCR allemand, T-35). Autres langues au besoin : `tesseract-data-spa`, `tesseract-data-ita`…
-- `sudo pacman -S libreoffice-fresh` (conversion et contrôle du rendu DOCX, T-30 et T-53).
+- `sudo pacman -S libreoffice-fresh` (facultatif : conversion DOCX → PDF réelle avec `soffice`, T-30 et T-53).
+

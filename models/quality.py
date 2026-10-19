@@ -39,3 +39,22 @@ class BookQuality(BaseModel):
     review_count: int = 0
     pages: list[PageQuality] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
+
+
+class ImageQualityMetrics(BaseModel):
+    sharpness_score: float
+    mean_luminance: float
+    contrast: float
+    glare_ratio: float
+    is_blurry: bool
+    is_underexposed: bool
+    is_overexposed: bool
+    overall_score: float
+
+
+class VisualComparisonResult(BaseModel):
+    ssim_score: float
+    text_coverage_ratio: float
+    is_faithful: bool
+    issues: list[Issue] = Field(default_factory=list)
+

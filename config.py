@@ -38,6 +38,11 @@ def log_dir() -> Path:
     return data_dir() / "logs"
 
 
+def db_path() -> Path:
+    """Emplacement de la base SQLite locale."""
+    return data_dir() / "bookocr.db"
+
+
 # Import
 MAX_FILE_MB = _int("BOOKOCR_MAX_FILE_MB", 80)
 MAX_PAGES_PER_PROJECT = _int("BOOKOCR_MAX_PAGES", 10_000)

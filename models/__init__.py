@@ -9,7 +9,8 @@ from models.ocr import OcrResult, OcrWord
 from models.page import GeometryCorrection, ImageEnhancement, Page, PageCategory, PageStatus
 from models.project import (MODE_LABELS, SCHEMA_VERSION, ExportSettings, Project, ProjectSummary,
                             ReconstructionMode, TypographySettings)
-from models.quality import BookQuality, PageQuality, RouteBand
+from models.quality import (BookQuality, ImageQualityMetrics, PageQuality, RouteBand,
+                            VisualComparisonResult)
 from models.reports import (ConversionResult, ExportReport, ImportReport, Issue, JobStatus, PageValidation,
                             ProcessingReport, ProgressEvent, Severity, TypographyReport, ValidationReport)
 

@@ -186,6 +186,11 @@ def save_project(project: Project) -> None:
         folder.mkdir(parents=True, exist_ok=True)
         _backup_current(folder)
         _atomic_write_text(folder / PROJECT_FILE, text)
+        try:
+            from repositories import book_repository
+            book_repository.save_book(project)
+        except Exception as error:
+            logger.warning("Synchronisation SQLite ignorée (%s) : %s", project.id, error)
 
 
 def _load_project_file(path: Path) -> Project:
