@@ -1,4 +1,4 @@
-"""Bilan des pages terminées par type (texte seul, avec image, couverture) et montants, avec totaux."""
+"""Bilan des pages terminées par type (texte seul, tableau, image, couverture) et montants, avec totaux."""
 from __future__ import annotations
 
 import streamlit as st
@@ -35,5 +35,5 @@ def price_summary(estimates: list[BookPriceEstimate], prices: PricingSettings) -
     unclassified = sum(estimate.unclassified_pages for estimate in estimates)
     if unclassified:
         st.caption(f"{unclassified} page(s) terminée(s) sans type connu ne sont pas comptées.")
-    if not any((prices.text_page, prices.image_page, prices.cover_page)):
+    if not any((prices.text_page, prices.table_page, prices.image_page, prices.cover_page)):
         st.caption("Aucun prix n'est encore défini : réglez-les dans l'onglet « Prix ».")

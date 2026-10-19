@@ -1,7 +1,7 @@
 """Écran « Prix » : prix par type de page et montant de la numérisation, par livre et pour tous les livres.
 
 Seules les pages dont le traitement est terminé (ou validées) sont comptées, selon leur type : texte seul,
-avec image(s), couverture avec image. Le type est détecté automatiquement et corrigible dans l'écran
+avec tableau(x), avec image(s), couverture avec image. Le type est détecté automatiquement et corrigible dans l'écran
 « Numérisation intelligente ».
 """
 from __future__ import annotations
@@ -20,18 +20,23 @@ prices = pricing_service.load_prices()
 st.subheader("Prix par page")
 with st.form("pricing", border=True):
     currency = st.text_input("Monnaie", value=prices.currency, max_chars=12)
-    columns = st.columns(3)
+    columns = st.columns(4)
     text_price = columns[0].number_input("Page de texte seul", min_value=0.0, value=float(prices.text_page),
                                          step=50.0, format="%.2f")
-    image_price = columns[1].number_input("Page avec image(s)", min_value=0.0, value=float(prices.image_page),
+    table_price = columns[1].number_input("Page avec tableau(x)", min_value=0.0, value=float(prices.table_page),
                                           step=50.0, format="%.2f")
-    cover_price = columns[2].number_input("Couverture avec image", min_value=0.0, value=float(prices.cover_page),
+    image_price = columns[2].number_input("Page avec image(s)", min_value=0.0, value=float(prices.image_page),
                                           step=50.0, format="%.2f")
+    cover_price = columns[3].number_input("Couverture avec image", min_value=0.0, value=float(prices.cover_page),
+                                          step=50.0, format="%.2f")
+    st.caption("Une page qui contient plusieurs éléments prend le type prioritaire : couverture, puis tableau, "
+               "puis image, puis texte seul. Le type de chaque page reste corrigible dans « Retoucher la page ».")
     saved = st.form_submit_button("Enregistrer les prix", type="primary", icon=":material/save:")
 if saved:
     with common.user_action("Prix enregistrés.") as result:
         pricing_service.save_prices(PricingSettings(currency=currency.strip() or "Ar", text_page=text_price,
-                                                    image_page=image_price, cover_page=cover_price))
+                                                    table_page=table_price, image_page=image_price,
+                                                    cover_page=cover_price))
     if result.ok:
         st.rerun()
 
@@ -50,9 +55,7 @@ with st.spinner("Calcul des statistiques des livres…"):
         estimates.append(estimate)
         counts = {line.kind: line.pages for line in estimate.lines}
         rows.append({"Livre": book.name, "Pages": stats.total_pages, "Terminées": stats.completed_pages,
-                     PAGE_KIND_LABELS[PageKind.TEXT]: counts[PageKind.TEXT],
-                     PAGE_KIND_LABELS[PageKind.IMAGE]: counts[PageKind.IMAGE],
-                     PAGE_KIND_LABELS[PageKind.COVER]: counts[PageKind.COVER],
+                     **{PAGE_KIND_LABELS[kind]: counts[kind] for kind in PageKind},
                      "Non terminées": stats.total_pages - stats.completed_pages,
                      "Montant": money(estimate.total, prices.currency)})
 if not rows:

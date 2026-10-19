@@ -4,6 +4,18 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Ajouté — 2026-10-19 (pages avec tableau)
+- Nouveau type de page « Avec tableau(x) » avec son prix (onglet Prix, bilan de la numérisation). Détection (`scanning_service.has_table`) : au moins 3 traits fins horizontaux et 3 verticaux, avec au moins 9 croisements ; les aplats et les photos sont exclus. Ordre de priorité : couverture, tableau, image, texte seul.
+- Les pages déjà classées sont reclassées automatiquement (`CLASSIFIER_VERSION = 2`), sauf celles dont le type a été choisi à la main. Un ancien `pricing.json` sans prix de tableau se charge (prix 0).
+
+### Corrigé et ajouté — 2026-10-19 (retouche d'une page)
+- Le bouton « Retoucher cette page » de la galerie semblait sans effet : la page était sélectionnée tout en bas de l'écran, hors de vue. La retouche s'ouvre désormais dans une fenêtre sur la page cliquée. Elle reste ouverte après chaque action, avec boutons page précédente/suivante, et propose cinq outils : aperçu et commandes, recadrage, réglages, orientation et type, analyse Gemma.
+- Recadrage manuel en mode sélection (`components/crop_selector.py`, composant Streamlit v2) :
+  - rectangle tracé à la souris, ou 4 coins libres pour une page en perspective ;
+  - extérieur assombri, grille des tiers, flèches du clavier ;
+  - « Image entière », « Contour proposé » et « Appliquer le recadrage » (contour validé par `scanning_service.set_manual_quad`) ;
+  - saisie numérique en repli.
+
 ### Ajouté — 2026-10-19 (gestion des projets, statistiques et prix)
 - Tableau de bord :
   - modifier un projet (nom, auteur, pages attendues, langues), via `project_service.update_project_details` ;

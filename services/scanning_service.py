@@ -36,6 +36,10 @@ from services.processing_service import Step
 
 logger = logging.getLogger("bookocr.scanning")
 
+CLASSIFIER_VERSION = 2            # 2 : ajout du type « avec tableau(x) »
+TABLE_INK_RELATIVE = 0.6           # trait de tableau : encre sous 60 % de la clarté du papier
+TABLE_MIN_LINES = 3                # au moins 3 traits horizontaux et 3 verticaux...
+TABLE_MIN_CROSSINGS = 9            # ... qui se croisent au moins 9 fois (grille de 2 × 2 cases)
 COVER_PICTURE_SHARE = 0.6          # images sur plus de 60 % de la page : couverture / page illustrée
 IMAGE_PICTURE_SHARE = 0.03         # au moins 3 % d'images : page « avec image(s) »
 COVER_PAPER_MAX = 90.0             # pas de papier clair (fond sombre ou coloré pleine page) : couverture
@@ -294,6 +298,7 @@ def _render(project: Project, page: Page, record: ScanPageRecord, straightened: 
     # Bloc de contenu à centrer dans le PDF : seulement sur fond blanc (sinon le bord de la photo se verrait).
     record.content_box = image_quality_service.content_box(final) if removed and final_source == "enhanced" else None
     record.page_kind, record.picture_share = classify_page(final)
+    record.page_kind_version = CLASSIFIER_VERSION
     record.timings_s["render"] = round(time.monotonic() - started, 2)
     return final
 
@@ -675,25 +680,58 @@ def describe_changes(project: Project, page: Page, record: ScanPageRecord) -> li
 # --------------------------------------------------------------------------- types de page et statistiques
 
 
+def has_table(small: np.ndarray, images: np.ndarray | None = None) -> bool:
+    """Vrai si la page contient une grille de tableau : au moins TABLE_MIN_LINES traits horizontaux et
+    verticaux fins qui se croisent au moins TABLE_MIN_CROSSINGS fois (2 × 2 cases au minimum).
+
+    Seuls les traits FINS comptent (encre moins ses zones pleines) et les images sont exclues : un encadré
+    coloré, une photo ou les axes d'un graphique (2 verticales) ne font pas un tableau.
+    """
+    gray = image_service.to_gray(small)
+    height, width = gray.shape
+    paper = max(float(np.percentile(gray, 90)), 1.0)
+    ink = (gray < TABLE_INK_RELATIVE * paper).astype(np.uint8)
+    solid = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+    if images is None:
+        images = image_enhancement.image_regions(small)
+    images = cv2.dilate(images.astype(np.uint8), np.ones((9, 9), np.uint8))
+    thin = ink & (1 - solid) & (1 - images)
+    horizontal = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((1, max(3, int(0.12 * width))), np.uint8))
+    vertical = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((max(3, int(0.06 * height)), 1), np.uint8))
+    horizontal_count = cv2.connectedComponents(cv2.dilate(horizontal, np.ones((3, 3), np.uint8)))[0] - 1
+    vertical_count = cv2.connectedComponents(cv2.dilate(vertical, np.ones((3, 3), np.uint8)))[0] - 1
+    crossings = cv2.connectedComponents(cv2.dilate(horizontal, np.ones((5, 5), np.uint8))
+                                        & cv2.dilate(vertical, np.ones((5, 5), np.uint8)))[0] - 1
+    return (horizontal_count >= TABLE_MIN_LINES and vertical_count >= TABLE_MIN_LINES
+            and crossings >= TABLE_MIN_CROSSINGS)
+
+
 def classify_page(final: np.ndarray) -> tuple[PageKind, float]:
-    """Type de la page finale : couverture (images sur la plupart de la page ou pas de papier clair), avec
-    image(s) (au moins 3 % d'images : photos, illustrations, aplats colorés, rectangles encadrés), texte seul."""
-    small = image_service.downscale(final, 900)[0]
-    share = float(image_enhancement.image_regions(small).mean())
+    """Type de la page finale, par priorité : couverture (images sur la plupart de la page ou pas de papier
+    clair), avec tableau(x) (grille de traits), avec image(s) (au moins 3 % d'images : photos, illustrations,
+    aplats colorés, rectangles encadrés), texte seul."""
+    small = image_service.downscale(final, 1400)[0]
+    regions = image_enhancement.image_regions(small)
+    share = float(regions.mean())
     paper = float(np.percentile(image_service.to_gray(small), 90))
     if paper < COVER_PAPER_MAX or share >= COVER_PICTURE_SHARE:
         return PageKind.COVER, round(share, 4)
+    # Un tableau encadré est aussi un « rectangle encadré » : seules les photos et aplats sont exclus ici.
+    if has_table(small, image_service.picture_mask(small)):
+        return PageKind.TABLE, round(share, 4)
     if share >= IMAGE_PICTURE_SHARE:
         return PageKind.IMAGE, round(share, 4)
     return PageKind.TEXT, round(share, 4)
 
 
 def ensure_page_kind(project: Project, page: Page, record: ScanPageRecord) -> ScanPageRecord:
-    """Classe une page déjà traitée avant l'existence du classement (lecture de final.jpg, une fois)."""
-    if record.page_kind is None and record.final_file:
+    """Classe une page traitée avant le classement actuel (lecture de final.jpg, une fois par version) ;
+    le type choisi par l'utilisateur n'est jamais touché."""
+    if (record.page_kind is None or record.page_kind_version < CLASSIFIER_VERSION) and record.final_file:
         final = load_final(project, record)
         if final is not None:
             record.page_kind, record.picture_share = classify_page(final)
+            record.page_kind_version = CLASSIFIER_VERSION
             save_record(project, record)
     return record
 

@@ -22,6 +22,7 @@ from models.errors import AiUnavailableError, BookOcrError
 from models.geometry import Point
 from models.scanning import (PAGE_KIND_LABELS, PageKind, ScanAdjustments, ScanBookSettings, ScanState,
                              SearchablePdfReport, SearchablePdfValidation)
+from components.crop_selector import crop_selector
 from components.price_summary import price_summary
 from repositories import scan_repository
 from services import (image_analysis_service, image_service, ocr_service, ollama_service, pricing_service,
@@ -31,6 +32,9 @@ from workers import scan_runner
 PREVIEW_SIDE = 900
 GALLERY_SIDE = 420
 GALLERY_PAGE_SIZE = 8
+CROP_SIDE = 1400                  # copie de la photo originale affichée dans le sélecteur de recadrage
+CROP_DISPLAY_WIDTH = 1100
+RETOUCH_TOOLS = ["Aperçu et commandes", "Recadrage", "Réglages", "Orientation et type", "Analyse Gemma"]
 NEW_BOOK = "__nouveau__"
 UPLOAD_TYPES = ["jpg", "jpeg", "png", "tif", "tiff", "pdf"]
 STATE_LABELS = {ScanState.PENDING: "En attente", ScanState.PROCESSING: "En cours", ScanState.COMPLETED: "Terminée",
@@ -98,6 +102,13 @@ def _size(path: Path | None) -> str:
             return f"{image.width} × {image.height} px"
     except OSError:
         return "—"
+
+
+def open_retouch(page_id: str) -> None:
+    """Ouvre (ou garde ouverte) la fenêtre de retouche sur cette page, au prochain affichage de l'écran."""
+    common.select_page(page_id)
+    st.session_state["_scan_dialog_page"] = page_id
+    st.rerun(scope="app")
 
 
 def _run(label: str, success: str, action) -> None:
@@ -333,153 +344,138 @@ def gallery() -> None:
                 if record.error:
                     st.error(record.error, icon=":material/error:")
                 if st.button("Retoucher cette page", key=f"retouch_{page.id}", icon=":material/tune:"):
-                    common.select_page(page.id)
-                    st.session_state["_scan_retouch_open"] = True
-                    st.rerun(scope="app")
+                    open_retouch(page.id)
 
 
 st.subheader("3. Résultats")
 gallery()
 
-# --------------------------------------------------------------------------- 4. retouche d'une page
+# --------------------------------------------------------------------------- 4. retouche d'une page (fenêtre)
 
 st.subheader("4. Retouche d'une page")
-page = common.page_selector(project, key="smart_scan")
-record = scanning_service.load_record(project, page)
-paths = project_service.page_paths(project, page)
-final_path = project_service.project_dir(project) / record.final_file if record.final_file else None
-busy = running and scan_runner.status().current_page == page.id
-task = scan_repository.get_task(project.id, page.id)
-state = task.state if task else ScanState.PENDING
-has_straightened = paths.corrected.is_file()
+st.caption("Choisissez une page ici, ou cliquez sur « Retoucher cette page » dans les résultats : la retouche "
+           "s'ouvre dans une fenêtre (aperçu, recadrage à la souris, réglages, orientation et type).")
+with st.container(horizontal=True, vertical_alignment="bottom"):
+    chosen_page = common.page_selector(project, key="smart_scan")
+    if st.button("Ouvrir la retouche", icon=":material/tune:", type="primary"):
+        open_retouch(chosen_page.id)
 
-with st.container(horizontal=True):
-    st.badge(STATE_LABELS[state], color=STATE_COLORS[state])
-    st.badge("Validée" if record.validated else "Non validée", color="green" if record.validated else "gray")
-    st.badge(f"Réglages : {SOURCE_LABELS.get(record.adjustments_source, record.adjustments_source)}", color="blue")
-    if record.final_file and not scanning_service.is_current(page, record):
-        st.badge("Image finale obsolète", color="orange")
 
-view = st.segmented_control("Affichage", ["Trois étapes", "Avant / après", "Zoom 100 %"], default="Trois étapes",
-                            key="scan_view")
-straightened = _cached(paths.corrected)
-final = _cached(final_path)
-if view == "Avant / après":
-    side = st.segmented_control("Image", ["Avant (redressée)", "Après (finale)"], default="Après (finale)",
-                                key="scan_side")
-    shown = final if side == "Après (finale)" else straightened
-    if shown is None:
-        st.info("Pas encore disponible.", icon=":material/image_not_supported:")
+def _retouch_preview(page, record, paths, final_path) -> None:
+    view = st.segmented_control("Affichage", ["Trois étapes", "Avant / après", "Zoom 100 %"],
+                                default="Trois étapes", key="scan_view")
+    straightened = _cached(paths.corrected)
+    final = _cached(final_path)
+    if view == "Avant / après":
+        side = st.segmented_control("Image", ["Avant (redressée)", "Après (finale)"], default="Après (finale)",
+                                    key="scan_side")
+        shown = final if side == "Après (finale)" else straightened
+        if shown is None:
+            st.info("Pas encore disponible.", icon=":material/image_not_supported:")
+        else:
+            st.image(shown, width="stretch", alt=side or "Page")
+    elif view == "Zoom 100 %":
+        target = final_path if final_path and final_path.is_file() else paths.corrected
+        if target.is_file():
+            full = image_service.read_image(target)
+            height, width = full.shape[:2]
+            zone_x = st.slider("Position horizontale", 0, 100, 50, key="scan_zoom_x")
+            zone_y = st.slider("Position verticale", 0, 100, 30, key="scan_zoom_y")
+            box = 700
+            x0 = int((width - min(box, width)) * zone_x / 100)
+            y0 = int((height - min(box, height)) * zone_y / 100)
+            st.image(full[y0:y0 + box, x0:x0 + box], alt="Détail à 100 %")
+            st.caption(f"Détail 1:1 de {target.name} ({width} × {height} px).")
+        else:
+            st.info("Pas encore disponible.", icon=":material/image_not_supported:")
     else:
-        st.image(shown, width="stretch", alt=side or "Page")
-elif view == "Zoom 100 %":
-    target = final_path if final_path and final_path.is_file() else paths.corrected
-    if target.is_file():
-        full = image_service.read_image(target)
-        height, width = full.shape[:2]
-        zone_x = st.slider("Position horizontale", 0, 100, 50, key="scan_zoom_x")
-        zone_y = st.slider("Position verticale", 0, 100, 30, key="scan_zoom_y")
-        box = 700
-        x0 = int((width - min(box, width)) * zone_x / 100)
-        y0 = int((height - min(box, height)) * zone_y / 100)
-        st.image(full[y0:y0 + box, x0:x0 + box], alt="Détail à 100 %")
-        st.caption(f"Détail 1:1 de {target.name} ({width} × {height} px).")
-    else:
-        st.info("Pas encore disponible.", icon=":material/image_not_supported:")
-else:
-    columns = st.columns(3, border=True)
-    panels = [("Photographie originale", common.original_image(project, page, PREVIEW_SIDE), paths.original),
-              ("Page redressée", straightened, paths.corrected),
-              ("Page améliorée (PDF)", final, final_path)]
-    for column, (title, image, path) in zip(columns, panels):
-        with column:
-            st.markdown(f"**{title}**")
-            if image is None:
-                st.info("Pas encore disponible.", icon=":material/image_not_supported:")
-            else:
-                st.image(image, width="stretch", alt=title)
-                st.caption(_size(path))
-
-with st.container(horizontal=True):
-    if st.button("Traiter cette page", icon=":material/play_arrow:", type="primary", disabled=busy):
-        _run("Traitement de la page…", "Page traitée.",
-             lambda: scanning_service.process_page(project, page.id, use_ai=ai_ready and bool(use_ai)))
-    if st.button("Analyser avec Gemma", icon=":material/smart_toy:", disabled=busy or not ai_ready or not has_straightened,
-                 help="Analyse mise en cache : relancée seulement si l'image ou le modèle change."):
-        _run("Analyse par Gemma (environ 2 minutes)…", "Analyse terminée.",
-             lambda: scanning_service.analyse(project, page.id))
-    if st.button("Détecter les bords à nouveau", icon=":material/crop_free:", disabled=busy):
-        _run("Détection géométrique…", "Géométrie recalculée.",
-             lambda: scanning_service.redetect_geometry(project, page.id))
-    if st.button("Améliorer automatiquement", icon=":material/auto_fix_high:", disabled=busy or not has_straightened):
-        _run("Amélioration mesurée…", "Amélioration appliquée.", lambda: scanning_service.auto_enhance(project, page.id))
-    if st.button("Restaurer l'original", icon=":material/restore:", disabled=busy or not has_straightened,
-                 help="Aucune amélioration : la page redressée telle quelle."):
-        _run("Restauration…", "Réglages neutres appliqués.",
-             lambda: scanning_service.reset_to_original(project, page.id))
-    if st.button("Réglages précédents", icon=":material/undo:", disabled=busy or not record.history):
-        _run("Retour aux réglages précédents…", "Réglages précédents restaurés.",
-             lambda: scanning_service.restore_previous(project, page.id))
-    if st.button("Dévalider" if record.validated else "Valider la page", icon=":material/task_alt:",
-                 disabled=busy or not scanning_service.is_current(page, record)):
-        _run("Enregistrement…", "Validation enregistrée.",
-             lambda: scanning_service.validate_page(project, page.id, not record.validated))
-
-kind_options = [None, *PageKind]
-kind_choice = st.selectbox(
-    "Type de page (statistiques et prix)", kind_options,
-    index=kind_options.index(record.page_kind_override),
-    format_func=lambda kind: (f"Automatique : {PAGE_KIND_LABELS[record.page_kind]}" if record.page_kind
-                              else "Automatique (après traitement)") if kind is None else PAGE_KIND_LABELS[kind],
-    key=f"scan_kind_{page.id}", disabled=busy)
-if kind_choice != record.page_kind_override:
-    with common.user_action("Type de page enregistré.") as kind_result:
-        scanning_service.set_page_kind(project, page.id, kind_choice)
-    if kind_result.ok:
-        st.rerun()
-
-with st.expander("Orientation et recadrage manuels", icon=":material/crop_rotate:"):
-    st.caption(f"Orientation automatique : {page.geometry.orientation_method or '—'}"
-               f"{' (incertaine)' if page.geometry.orientation_uncertain else ''} ; quarts de tour appliqués : "
-               f"{page.geometry.effective_quarter_turns()}.")
-    turns = st.segmented_control("Rotation manuelle (après l'automatique)", [0, 1, 2, 3],
-                                 default=page.geometry.manual_quarter_turns,
-                                 format_func=lambda value: f"{value * 90}°", key=f"scan_turns_{page.id}")
-    if st.button("Confirmer la rotation", disabled=busy or turns is None or turns == page.geometry.manual_quarter_turns):
-        _run("Rotation…", "Rotation appliquée.", lambda: scanning_service.set_rotation(project, page.id, int(turns)))
-    quad = page.geometry.effective_quad() or [Point(x=0, y=0), Point(x=1, y=0), Point(x=1, y=1), Point(x=0, y=1)]
-    with st.form(f"scan_quad_{page.id}"):
-        st.caption("Coins de la page sur la photographie originale (0 à 1 ; haut-gauche, haut-droit, "
-                   "bas-droit, bas-gauche). Le contour est contrôlé (convexe, assez grand, angles plausibles).")
-        values = []
-        for index, (corner, label) in enumerate(zip(quad, ["Haut-gauche", "Haut-droit", "Bas-droit", "Bas-gauche"])):
-            cx, cy = st.columns(2)
-            x = cx.number_input(f"{label} x", 0.0, 1.0, float(corner.x), 0.005, format="%.3f", key=f"q{index}x_{page.id}")
-            y = cy.number_input(f"{label} y", 0.0, 1.0, float(corner.y), 0.005, format="%.3f", key=f"q{index}y_{page.id}")
-            values.append(Point(x=x, y=y))
-        apply_quad = st.form_submit_button("Appliquer le recadrage", disabled=busy)
-    if apply_quad:
-        _run("Recadrage…", "Recadrage manuel appliqué.", lambda: scanning_service.set_manual_quad(project, page.id, values))
-    if page.geometry.manual_quad is not None and st.button("Revenir au contour automatique", disabled=busy):
-        _run("Recadrage…", "Contour automatique rétabli.", lambda: scanning_service.set_manual_quad(project, page.id, None))
-
-if record.analysis is not None:
-    with st.expander("Analyse Gemma", icon=":material/smart_toy:", expanded=record.proposed_plan is not None):
-        st.table(image_analysis_service.summary(record.analysis))
-        st.caption(f"Modèle {record.analysis.model} · consigne {record.analysis.prompt_version} · "
-                   f"{record.analysis.created_at:%d/%m/%Y %H:%M} · "
-                   f"{record.analysis.duration_s or 0:.0f} s. Gemma propose, les mesures décident.")
-        if record.proposed_plan is not None:
-            st.markdown("**Proposition (après confirmation par les mesures)**")
-            for reason in record.proposed_plan.reasons:
-                st.caption(f"• {reason}")
-            st.json(record.proposed_plan.adjustments.model_dump(exclude_defaults=True))
-            if st.button("Appliquer la proposition", icon=":material/check:", disabled=busy):
-                _run("Application…", "Proposition appliquée.", lambda: scanning_service.apply_proposal(project, page.id))
+        columns = st.columns(3, border=True)
+        panels = [("Photographie originale", common.original_image(project, page, PREVIEW_SIDE), paths.original),
+                  ("Page redressée", straightened, paths.corrected),
+                  ("Page améliorée (PDF)", final, final_path)]
+        for column, (title, image, path) in zip(columns, panels):
+            with column:
+                st.markdown(f"**{title}**")
+                if image is None:
+                    st.info("Pas encore disponible.", icon=":material/image_not_supported:")
+                else:
+                    st.image(image, width="stretch", alt=title)
+                    st.caption(_size(path))
 
 
-@st.fragment
-def manual_adjustments() -> None:
+def _retouch_commands(page, record, busy: bool, has_straightened: bool) -> None:
+    with st.container(horizontal=True):
+        if st.button("Traiter cette page", icon=":material/play_arrow:", type="primary", disabled=busy):
+            _run("Traitement de la page…", "Page traitée.",
+                 lambda: scanning_service.process_page(project, page.id, use_ai=ai_ready and bool(use_ai)))
+        if st.button("Analyser avec Gemma", icon=":material/smart_toy:",
+                     disabled=busy or not ai_ready or not has_straightened,
+                     help="Analyse mise en cache : relancée seulement si l'image ou le modèle change."):
+            _run("Analyse par Gemma (environ 2 minutes)…", "Analyse terminée.",
+                 lambda: scanning_service.analyse(project, page.id))
+        if st.button("Détecter les bords à nouveau", icon=":material/crop_free:", disabled=busy):
+            _run("Détection géométrique…", "Géométrie recalculée.",
+                 lambda: scanning_service.redetect_geometry(project, page.id))
+        if st.button("Améliorer automatiquement", icon=":material/auto_fix_high:", disabled=busy or not has_straightened):
+            _run("Amélioration mesurée…", "Amélioration appliquée.",
+                 lambda: scanning_service.auto_enhance(project, page.id))
+        if st.button("Restaurer l'original", icon=":material/restore:", disabled=busy or not has_straightened,
+                     help="Aucune amélioration : la page redressée telle quelle."):
+            _run("Restauration…", "Réglages neutres appliqués.",
+                 lambda: scanning_service.reset_to_original(project, page.id))
+        if st.button("Réglages précédents", icon=":material/undo:", disabled=busy or not record.history):
+            _run("Retour aux réglages précédents…", "Réglages précédents restaurés.",
+                 lambda: scanning_service.restore_previous(project, page.id))
+        if st.button("Dévalider" if record.validated else "Valider la page", icon=":material/task_alt:",
+                     disabled=busy or not scanning_service.is_current(page, record)):
+            _run("Enregistrement…", "Validation enregistrée.",
+                 lambda: scanning_service.validate_page(project, page.id, not record.validated))
+
+
+def _retouch_crop(page, busy: bool) -> None:
+    """Recadrage manuel à la souris : rectangle ou 4 coins (perspective) sur la photographie originale."""
+    st.caption("Tracez la zone de la page sur la photo d'origine, ou passez en « 4 coins » pour suivre une page "
+               "photographiée en biais, puis cliquez sur « Appliquer le recadrage ». La perspective, l'orientation "
+               "et l'amélioration sont ensuite recalculées pour cette page.")
+    original = common.original_image(project, page, CROP_SIDE)
+    if original is None:
+        st.warning("Photographie originale illisible.", icon=":material/image_not_supported:")
+        return
+    current = page.geometry.effective_quad()
+    rectangular = current is None or (abs(current[0].y - current[1].y) < 0.002 and abs(current[0].x - current[3].x) < 0.002
+                                      and abs(current[2].y - current[3].y) < 0.002 and abs(current[1].x - current[2].x) < 0.002)
+    corners = crop_selector(common.jpeg_data_uri(original), current, key=f"crop_{page.id}",
+                            width=CROP_DISPLAY_WIDTH, mode="rect" if rectangular else "quad",
+                            alt=f"Photographie originale de la page {project.page_number(page.id)}")
+    if corners is not None and not busy:
+        _run("Recadrage et nouveau traitement de la page…", "Recadrage manuel appliqué.",
+             lambda: scanning_service.set_manual_quad(project, page.id, corners))
+    origin = "manuel" if page.geometry.manual_quad is not None else (
+        "automatique" if page.geometry.detected_quad is not None else "aucun (photo entière)")
+    st.caption(f"Contour actuel : {origin}.")
+    if page.geometry.manual_quad is not None and st.button("Revenir au contour automatique", disabled=busy,
+                                                           icon=":material/auto_fix_high:"):
+        _run("Recadrage…", "Contour automatique rétabli.",
+             lambda: scanning_service.set_manual_quad(project, page.id, None))
+    with st.expander("Saisie numérique des coins (alternative au clavier)"):
+        quad = current or [Point(x=0, y=0), Point(x=1, y=0), Point(x=1, y=1), Point(x=0, y=1)]
+        with st.form(f"scan_quad_{page.id}", border=False):
+            values = []
+            for index, (corner, label) in enumerate(zip(quad, ["Haut-gauche", "Haut-droit", "Bas-droit",
+                                                               "Bas-gauche"])):
+                cx, cy = st.columns(2)
+                x = cx.number_input(f"{label} x", 0.0, 1.0, float(corner.x), 0.005, format="%.3f",
+                                    key=f"q{index}x_{page.id}")
+                y = cy.number_input(f"{label} y", 0.0, 1.0, float(corner.y), 0.005, format="%.3f",
+                                    key=f"q{index}y_{page.id}")
+                values.append(Point(x=x, y=y))
+            apply_quad = st.form_submit_button("Appliquer ces coins", disabled=busy)
+        if apply_quad:
+            _run("Recadrage…", "Recadrage manuel appliqué.",
+                 lambda: scanning_service.set_manual_quad(project, page.id, values))
+
+
+def _retouch_adjustments(page, record, busy: bool, has_straightened: bool) -> None:
     if not has_straightened:
         st.info("Traitez la page pour régler son amélioration.", icon=":material/info:")
         return
@@ -514,15 +510,103 @@ def manual_adjustments() -> None:
                    f"{check.color_shift:.1f} (aperçu réduit ; les scores seuls ne prouvent pas une amélioration).")
         if st.button("Enregistrer ces réglages (pleine résolution + OCR)", icon=":material/save:", type="primary",
                      disabled=busy):
-            with common.user_action("Réglages enregistrés et appliqués.") as result, st.spinner("Application…"):
-                scanning_service.render_final(project, page.id, adjustments, source="manual")
-            if result.ok:
-                st.rerun(scope="app")
+            _run("Application…", "Réglages enregistrés et appliqués.",
+                 lambda: scanning_service.render_final(project, page.id, adjustments, source="manual"))
 
 
-with st.expander("Ajuster manuellement", icon=":material/tune:",
-                 expanded=st.session_state.pop("_scan_retouch_open", False)):
-    manual_adjustments()
+def _retouch_orientation_kind(page, record, busy: bool) -> None:
+    st.caption(f"Orientation automatique : {page.geometry.orientation_method or '—'}"
+               f"{' (incertaine)' if page.geometry.orientation_uncertain else ''} ; quarts de tour appliqués : "
+               f"{page.geometry.effective_quarter_turns()}.")
+    turns = st.segmented_control("Rotation manuelle (après l'automatique)", [0, 1, 2, 3],
+                                 default=page.geometry.manual_quarter_turns,
+                                 format_func=lambda value: f"{value * 90}°", key=f"scan_turns_{page.id}")
+    if st.button("Confirmer la rotation", disabled=busy or turns is None or turns == page.geometry.manual_quarter_turns):
+        _run("Rotation…", "Rotation appliquée.", lambda: scanning_service.set_rotation(project, page.id, int(turns)))
+    kind_options = [None, *PageKind]
+    kind_choice = st.selectbox(
+        "Type de page (statistiques et prix)", kind_options,
+        index=kind_options.index(record.page_kind_override),
+        format_func=lambda kind: (f"Automatique : {PAGE_KIND_LABELS[record.page_kind]}" if record.page_kind
+                                  else "Automatique (après traitement)") if kind is None else PAGE_KIND_LABELS[kind],
+        key=f"scan_kind_{page.id}", disabled=busy)
+    if kind_choice != record.page_kind_override:
+        _run("Enregistrement…", "Type de page enregistré.",
+             lambda: scanning_service.set_page_kind(project, page.id, kind_choice))
+
+
+def _retouch_analysis(page, record, busy: bool) -> None:
+    if record.analysis is None:
+        st.info("Pas encore d'analyse Gemma pour cette page.", icon=":material/smart_toy:")
+        return
+    st.table(image_analysis_service.summary(record.analysis))
+    st.caption(f"Modèle {record.analysis.model} · consigne {record.analysis.prompt_version} · "
+               f"{record.analysis.created_at:%d/%m/%Y %H:%M} · "
+               f"{record.analysis.duration_s or 0:.0f} s. Gemma propose, les mesures décident.")
+    if record.proposed_plan is not None:
+        st.markdown("**Proposition (après confirmation par les mesures)**")
+        for reason in record.proposed_plan.reasons:
+            st.caption(f"• {reason}")
+        st.json(record.proposed_plan.adjustments.model_dump(exclude_defaults=True))
+        if st.button("Appliquer la proposition", icon=":material/check:", disabled=busy):
+            _run("Application…", "Proposition appliquée.", lambda: scanning_service.apply_proposal(project, page.id))
+
+
+def _close_retouch() -> None:
+    st.session_state.pop("_scan_dialog_page", None)
+
+
+@st.dialog("Retoucher la page", width="large", on_dismiss=_close_retouch)
+def retouch_dialog(page_id: str) -> None:
+    page = project.page(page_id)
+    record = scanning_service.load_record(project, page)
+    paths = project_service.page_paths(project, page)
+    final_path = project_service.project_dir(project) / record.final_file if record.final_file else None
+    busy = running and scan_runner.status().current_page == page.id
+    task = scan_repository.get_task(project.id, page.id)
+    state = task.state if task else ScanState.PENDING
+    has_straightened = paths.corrected.is_file()
+    ids = [item.id for item in project.pages]
+    position = ids.index(page.id)
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.markdown(f"**Page {position + 1} / {len(ids)}** · {page.original_name}")
+        st.badge(STATE_LABELS[state], color=STATE_COLORS[state])
+        st.badge("Validée" if record.validated else "Non validée", color="green" if record.validated else "gray")
+        if record.effective_kind is not None:
+            st.badge(PAGE_KIND_LABELS[record.effective_kind], color="violet")
+        if record.final_file and not scanning_service.is_current(page, record):
+            st.badge("Image finale obsolète", color="orange")
+    with st.container(horizontal=True):
+        if st.button("Page précédente", icon=":material/chevron_left:", disabled=position == 0, key="retouch_prev"):
+            open_retouch(ids[position - 1])
+        if st.button("Page suivante", icon=":material/chevron_right:", disabled=position == len(ids) - 1,
+                     key="retouch_next"):
+            open_retouch(ids[position + 1])
+        if st.button("Fermer", icon=":material/close:", key="retouch_close"):
+            _close_retouch()
+            st.rerun()
+    if busy:
+        st.info("Cette page est en cours de traitement en arrière-plan : les commandes sont désactivées.",
+                icon=":material/hourglass_top:")
+    for reason in record.review_reasons:
+        st.warning(reason, icon=":material/rule:")
+    if record.error:
+        st.error(record.error, icon=":material/error:")
+
+    tool = st.segmented_control("Outil", RETOUCH_TOOLS, default=RETOUCH_TOOLS[0], key="retouch_tool")
+    if tool == "Recadrage":
+        _retouch_crop(page, busy)
+    elif tool == "Réglages":
+        _retouch_adjustments(page, record, busy, has_straightened)
+    elif tool == "Orientation et type":
+        _retouch_orientation_kind(page, record, busy)
+    elif tool == "Analyse Gemma":
+        _retouch_analysis(page, record, busy)
+    else:
+        _retouch_preview(page, record, paths, final_path)
+        _retouch_commands(page, record, busy, has_straightened)
+
 
 with st.expander("Tableau des pages et sélection", icon=":material/table_rows:"):
     table = st.dataframe(
@@ -592,3 +676,8 @@ def book_totals() -> None:
 
 book_totals()
 st.page_link(common.SCREEN_PRICING, label="Régler les prix", icon=":material/payments:")
+
+# --------------------------------------------------------------------------- fenêtre de retouche
+
+if st.session_state.get("_scan_dialog_page") in by_id:
+    retouch_dialog(st.session_state["_scan_dialog_page"])

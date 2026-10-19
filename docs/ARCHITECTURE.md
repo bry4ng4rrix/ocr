@@ -428,7 +428,8 @@ project_service.list_trashed_projects() -> list[TrashedProject] ; project_servic
 scanning_service.delete_book(project_id) -> str         # refusé pendant un traitement ; retire les lignes scan_tasks
 scanning_service.restore_book(trash_name) -> Project    # reconstruit les états de file depuis les record.json
 scanning_service.classify_page(final_rgb) -> (PageKind, part_images)
-    # couverture : pas de papier clair (p90 < 90) ou images ≥ 60 % ; avec image(s) : images ≥ 3 % ; sinon texte seul
+    # priorité : couverture (pas de papier clair, p90 < 90, ou images ≥ 60 %) ; tableau (has_table : ≥ 3 traits fins
+    # horizontaux et verticaux, ≥ 9 croisements) ; avec image(s) (images ≥ 3 %) ; sinon texte seul
 scanning_service.set_page_kind(project, page_id, kind | None) ; scanning_service.book_statistics(project) -> BookScanStats
 pricing_service.load_prices() / save_prices(PricingSettings) ; pricing_service.estimate(stats, prices) -> BookPriceEstimate
 ```

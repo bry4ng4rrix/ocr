@@ -270,12 +270,13 @@ FinalSource = Literal["enhanced", "straightened"]
 class PageKind(StrEnum):
     """Type de page pour les statistiques et les prix."""
 
-    TEXT = "text"              # texte seul (pas d'image)
+    TEXT = "text"              # texte seul (pas d'image ni de tableau)
+    TABLE = "table"            # page avec tableau(x) (grille de traits)
     IMAGE = "image"            # page avec photo(s) ou illustration(s)
     COVER = "cover"            # couverture ou page entièrement illustrée (photo pleine page, fond sombre)
 
 
-PAGE_KIND_LABELS = {PageKind.TEXT: "Texte seul", PageKind.IMAGE: "Avec image(s)",
+PAGE_KIND_LABELS = {PageKind.TEXT: "Texte seul", PageKind.TABLE: "Avec tableau(x)", PageKind.IMAGE: "Avec image(s)",
                     PageKind.COVER: "Couverture avec image"}
 
 
@@ -314,6 +315,7 @@ class ScanPageRecord(BaseModel):
     picture_share: float | None = None               # part de la page couverte par des images (final.jpg)
     page_kind: PageKind | None = None                # type détecté (texte seul, avec image, couverture)
     page_kind_override: PageKind | None = None       # type choisi par l'utilisateur (prioritaire)
+    page_kind_version: int = 0                       # version du classement (reclassement automatique si ancienne)
     review_reasons: list[str] = Field(default_factory=list)
     validated: bool = False                          # validation explicite par l'utilisateur
     error: str | None = None
@@ -378,7 +380,7 @@ class SearchablePdfValidation(BaseModel):
 
 
 class BookScanStats(BaseModel):
-    """Statistiques d'un livre : pages terminées par type (texte seul, avec image, couverture)."""
+    """Statistiques d'un livre : pages terminées par type (texte seul, avec tableau, avec image, couverture)."""
 
     book_id: str
     book_name: str

@@ -9,11 +9,12 @@ from models.scanning import PageKind
 class PricingSettings(BaseModel):
     currency: str = Field(default="Ar", max_length=12)
     text_page: float = Field(default=0.0, ge=0)        # page de texte seul
+    table_page: float = Field(default=0.0, ge=0)       # page avec tableau(x)
     image_page: float = Field(default=0.0, ge=0)       # page avec image(s)
     cover_page: float = Field(default=0.0, ge=0)       # couverture avec image
 
     def price(self, kind: PageKind) -> float:
-        return {PageKind.TEXT: self.text_page, PageKind.IMAGE: self.image_page,
+        return {PageKind.TEXT: self.text_page, PageKind.TABLE: self.table_page, PageKind.IMAGE: self.image_page,
                 PageKind.COVER: self.cover_page}[kind]
 
 

@@ -45,3 +45,36 @@ def test_new_book_from_folder_is_processed_shown_and_exported(data_dir, tmp_path
     [button for button in at.button if button.label == "Exporter le PDF du livre"][0].click().run()
     assert not at.exception and not at.error
     assert any("Validation : réussie" in item.value for item in at.success)
+
+
+def test_crop_event_corners_are_parsed_and_bounded():
+    from components.crop_selector import corners_from_event
+
+    corners = corners_from_event({"corners": [[-0.1, 0.05], [0.9, 0.05], [1.2, 0.95], [0.1, 0.95]], "nonce": "a"})
+    assert [(p.x, p.y) for p in corners] == [(0.0, 0.05), (0.9, 0.05), (1.0, 0.95), (0.1, 0.95)]
+    assert corners_from_event({"corners": [[0, 0], [1, 0]]}) is None
+    assert corners_from_event({"corners": "rm -rf"}) is None
+    assert corners_from_event({"corners": [["a", 0], [1, 0], [1, 1], [0, 1]]}) is None
+
+
+def test_retouch_button_opens_the_dialog_on_that_page(data_dir, tmp_path):
+    from services import scanning_service
+
+    st.cache_data.clear()
+    project = scanning_service.create_book("Livre", ["fra"])
+    scanning_service.import_book_files(project, [
+        (f"p{index}.png", synthetic.save(make(), tmp_path / str(index)).read_bytes())
+        for index, make in ((1, synthetic.text_page), (2, synthetic.german_text_page))])     # deux pages distinctes
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.session_state["project_id"] = project.id
+    at.run()
+    at.switch_page(common.SCREEN_SMART_SCAN).run()
+    second = project.pages[1].id
+    at.button(key=f"retouch_{second}").click().run()
+    assert not at.exception
+    assert at.session_state["_scan_dialog_page"] == second
+    assert any(item.value.startswith("**Page 2 / 2**") for item in at.markdown)
+    at.segmented_control(key="retouch_tool").set_value("Recadrage").run()
+    assert not at.exception
+    at.button(key="retouch_close").click().run()
+    assert "_scan_dialog_page" not in at.session_state
