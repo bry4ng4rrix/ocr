@@ -29,7 +29,7 @@ from pydantic import ValidationError
 
 import config
 from models.blocks import new_id
-from models.errors import (BookOcrError, FileTooLargeError, ImageReadError, PageNotFoundError,
+from models.errors import (BookOcrError, FileTooLargeError, ImageReadError, ImportPathError, PageNotFoundError,
                            ProjectCorruptedError, ProjectNotFoundError, UnsupportedFileError)
 from models.page import GeometryCorrection, Page, PageStatus
 from models.project import SCHEMA_VERSION, Project, ProjectSummary, utc_now
@@ -42,7 +42,7 @@ PROJECT_FILE = "project.json"
 BACKUP_FILE = "project.json.bak"
 CORRUPTED_COPY = "project.json.corrupted"
 PROJECT_SUBDIRS = ("originals", "corrected", "enhanced", "ocr_input", "images", "backgrounds", "thumbs",
-                   "cache/ocr", "history", "exports", "trash")
+                   "cache/ocr", "ocr/history", "history", "exports", "trash")
 TRASH_MANIFEST = "source.json"          # dans chaque lot de trash/<page_id>/<lot>/ : empreinte de l'original
 _PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _VERSION_ID = re.compile(r"^\d{8}T\d{12}Z_[0-9a-f]{8}$")
@@ -151,12 +151,15 @@ def _backup_current(folder: Path) -> None:
 # --------------------------------------------------------------------------- création, ouverture, sauvegarde
 
 
-def create_project(name: str, languages: list[str] | None = None) -> Project:
+def create_project(name: str, languages: list[str] | None = None, *,
+                   author: str | None = None, expected_page_count: int | None = None) -> Project:
     """Crée le dossier du projet (arborescence §3) et l'enregistre."""
     clean_name = (name or "").strip()
     if not clean_name:
         raise ValueError("Le nom du projet ne peut pas être vide.")
+    clean_author = (author or "").strip() or None
     project = Project(name=clean_name, languages=list(languages or config.DEFAULT_LANGUAGES),
+                      author=clean_author, expected_page_count=expected_page_count,
                       autosave_seconds=config.DEFAULT_AUTOSAVE_SECONDS)
     root = project_dir(project)
     for subdir in PROJECT_SUBDIRS:
@@ -434,6 +437,68 @@ def import_files(project: Project, files: list[tuple[str, bytes]], position: int
     report.added_page_ids = [page.id for page in added]
     logger.info("Import dans %s : %d page(s) ajoutée(s), %d signalement(s)", project.id, len(added),
                 len(report.issues))
+    return report
+
+
+def _natural_key(path: Path) -> list:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(path))]
+
+
+def collect_import_paths(root: Path, recursive: bool = True) -> list[Path]:
+    """Fichiers importables sous `root` (fichier unique ou dossier), triés de façon naturelle.
+
+    L'ordre des noms n'est pas l'ordre du livre : l'utilisateur peut le corriger ensuite.
+    """
+    target = root.expanduser().resolve()
+    if not target.exists():
+        raise ImportPathError(f"Le chemin « {root} » n'existe pas.")
+    if target.is_file():
+        if target.suffix.lower() not in config.ALLOWED_EXTENSIONS:
+            raise ImportPathError(f"« {target.name} » n'est pas un format accepté.")
+        return [target]
+    if not target.is_dir():
+        raise ImportPathError(f"« {root} » n'est ni un fichier ni un dossier.")
+    pattern = "**/*" if recursive else "*"
+    found = [path for path in target.glob(pattern)
+             if path.is_file() and not path.name.startswith(".")
+             and path.suffix.lower() in config.ALLOWED_EXTENSIONS]
+    return sorted(found, key=_natural_key)
+
+
+def import_paths(project: Project, paths: list[Path | str], position: int | None = None) -> ImportReport:
+    """Importe depuis le disque, un fichier à la fois (pas tous les octets en mémoire)."""
+    report = ImportReport()
+    known = {(page.source_sha256, page.source_index) for page in project.pages}
+    added: list[Page] = []
+    for raw in paths:
+        path = Path(raw)
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            logger.warning("Fichier illisible à l'import disque : %s", error)
+            report.issues.append(Issue(code="import_unreadable", severity=Severity.ERROR,
+                                       message=f"« {path.name} » n'a pas pu être lu."))
+            continue
+        try:
+            pages, issues = _import_one_file(project, path.name, data, known, len(project.pages) + len(added))
+        except BookOcrError as error:
+            logger.warning("Fichier refusé à l'import : %s", error)
+            report.issues.append(Issue(code=_import_error_code(error), message=error.user_message,
+                                       severity=Severity.ERROR))
+            continue
+        except Exception:
+            logger.exception("Erreur inattendue à l'import de %s", path)
+            report.issues.append(Issue(code="import_failed", severity=Severity.ERROR,
+                                       message=f"« {path.name} » n'a pas pu être importé (erreur inattendue)."))
+            continue
+        added += pages
+        report.issues += issues
+    if added:
+        index = len(project.pages) if position is None else max(0, min(position, len(project.pages)))
+        project.pages[index:index] = added
+        save_project(project)
+    report.added_page_ids = [page.id for page in added]
+    logger.info("Import disque dans %s : %d page(s) ajoutée(s)", project.id, len(added))
     return report
 
 

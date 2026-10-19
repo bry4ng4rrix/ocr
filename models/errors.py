@@ -65,3 +65,11 @@ class ExportError(BookOcrError):
 
 class ConversionUnavailableError(BookOcrError):
     """LibreOffice (soffice) absent : conversion DOCX -> PDF impossible."""
+
+
+class ImportPathError(BookOcrError):
+    """Chemin d'import local invalide ou illisible."""
+
+
+class AiUnavailableError(BookOcrError):
+    """Ollama ou Gemini désactivé, absent, ou refusé par la confidentialité du projet."""

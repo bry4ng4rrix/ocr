@@ -61,12 +61,16 @@ class Project(BaseModel):
     schema_version: int = SCHEMA_VERSION
     id: str = Field(default_factory=new_id)
     name: str
+    author: str | None = None
+    expected_page_count: int | None = Field(default=None, ge=1, le=100_000)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     languages: list[str] = Field(default_factory=lambda: ["fra", "eng"])
     ocr_psm: int = 3
     background_method: Literal["inpaint", "fill"] = "inpaint"
     autosave_seconds: int = Field(default=30, ge=0, le=3600)   # 0 = désactivée
+    cloud_ai_allowed: bool = False          # Gemini : interdit sauf consentement explicite
+    ollama_allowed: bool = False            # analyse locale optionnelle, jamais obligatoire
     pages: list[Page] = Field(default_factory=list)
     typography: TypographySettings = Field(default_factory=TypographySettings)
     export: ExportSettings = Field(default_factory=ExportSettings)

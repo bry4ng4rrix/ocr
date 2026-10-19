@@ -2,6 +2,8 @@
 suppression, affichage original / corrigé."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 import config
@@ -61,6 +63,32 @@ with st.expander("Importer des pages", icon=":material/upload_file:", expanded=n
                 _flash_import_report(report)
                 st.session_state["_upload_round"] = upload_round + 1
                 st.rerun()
+
+    with st.form("import_folder_form", border=False):
+        folder = st.text_input(
+            "Dossier local (un fichier à la fois, sans tout charger en mémoire)",
+            help="Chemin d'un dossier de photos ou d'un fichier. L'ordre des noms n'est pas forcément l'ordre du livre.")
+        recursive = st.checkbox("Inclure les sous-dossiers", value=True)
+        folder_submit = st.form_submit_button("Importer le dossier", icon=":material/folder_open:")
+    if folder_submit:
+        if not folder.strip():
+            st.error("Indiquez un chemin de dossier ou de fichier.")
+        else:
+            try:
+                paths = project_service.collect_import_paths(Path(folder.strip()), recursive=recursive)
+            except BookOcrError as error:
+                st.error(error.user_message)
+            else:
+                if not paths:
+                    st.error("Aucun fichier JPG, PNG, TIFF ou PDF n'a été trouvé.")
+                else:
+                    with common.user_action() as result:
+                        with st.spinner(f"Import de {len(paths)} fichier(s)…"):
+                            with common.editing(project.id) as fresh:
+                                report = project_service.import_paths(fresh, paths)
+                    if result.ok:
+                        _flash_import_report(report)
+                        st.rerun()
 
 common.require_pages(project)
 

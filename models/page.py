@@ -149,6 +149,8 @@ class Page(BaseModel):
     ocr_signature: str | None = None           # GeometryCorrection.signature() au moment de l'OCR
     ocr_languages: list[str] = Field(default_factory=list)
     mean_confidence: float | None = None
+    review_required: bool = False              # routage E : à valider à la main
+    route_band: str | None = None              # A..E (voir models.quality.RouteBand)
 
     @property
     def effective_category(self) -> PageCategory:

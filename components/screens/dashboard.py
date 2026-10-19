@@ -23,8 +23,13 @@ if project is not None:
     outdated = sum(page.ocr_outdated for page in pages)
 
     st.subheader(project.name)
-    st.caption(f"Langues OCR : {', '.join(project.languages) or 'aucune'} · dernière modification : "
-               f"{project.updated_at.astimezone():%d/%m/%Y %H:%M}")
+    meta = [f"Langues OCR : {', '.join(project.languages) or 'aucune'}"]
+    if project.author:
+        meta.append(f"Auteur : {project.author}")
+    if project.expected_page_count:
+        meta.append(f"Pages attendues : {project.expected_page_count}")
+    meta.append(f"dernière modification : {project.updated_at.astimezone():%d/%m/%Y %H:%M}")
+    st.caption(" · ".join(meta))
     with st.container(horizontal=True):
         st.metric("Pages", len(pages), border=True)
         st.metric("Pages traitées", corrected, border=True, help="Correction géométrique faite (au moins).")
@@ -112,6 +117,9 @@ with create_column:
     defaults = [lang for lang in ("fra", "eng") if lang in installed]
     with st.form("create_project", border=True):
         name = st.text_input("Nom du livre", placeholder="Par exemple : Histoire de la vallée")
+        author = st.text_input("Auteur (facultatif)")
+        expected = st.number_input("Nombre de pages attendu (facultatif, 0 = inconnu)", min_value=0,
+                                   max_value=100_000, value=0, step=1)
         languages = st.multiselect("Langues du texte (OCR)", installed, default=defaults,
                                    help="Choisissez toutes les langues présentes dans le livre.")
         submitted = st.form_submit_button("Créer le projet", type="primary", icon=":material/add:")
@@ -122,7 +130,9 @@ with create_column:
             st.error("Choisissez au moins une langue d'OCR.")
         else:
             with common.user_action(f"Projet « {name.strip()} » créé.") as result:
-                created = project_service.create_project(name.strip(), languages)
+                created = project_service.create_project(
+                    name.strip(), languages, author=author.strip() or None,
+                    expected_page_count=int(expected) or None)
             if result.ok:
                 st.session_state["project_id"] = created.id
                 common.select_page(None)

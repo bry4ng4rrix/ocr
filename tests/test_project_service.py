@@ -127,6 +127,14 @@ def test_create_project_requires_a_name(data_dir):
         project_service.create_project("   ")
 
 
+def test_create_project_metadata(data_dir):
+    project = project_service.create_project("Livre", ["fra"], author="Auteur", expected_page_count=84)
+    reopened = project_service.open_project(project.id)
+    assert reopened.author == "Auteur"
+    assert reopened.expected_page_count == 84
+    assert reopened.cloud_ai_allowed is False
+
+
 def test_list_projects_sorted_and_skips_unreadable(data_dir):
     first = project_service.create_project("Premier")
     second = project_service.create_project("Second")
@@ -329,6 +337,20 @@ def test_import_at_position(project):
     report = project_service.import_files(project, [("c.jpg", jpeg(3))], position=1)
     assert [page.id for page in project.pages] == [first, report.added_page_ids[0], last]
     assert [page.id for page in project_service.open_project(project.id).pages] == [page.id for page in project.pages]
+
+
+def test_import_paths_from_folder_natural_order(project, tmp_path):
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    (folder / "p2.jpg").write_bytes(jpeg(2))
+    (folder / "p10.jpg").write_bytes(jpeg(10))
+    (folder / "p1.jpg").write_bytes(jpeg(1))
+    (folder / "ignore.txt").write_text("non", encoding="utf-8")
+    paths = project_service.collect_import_paths(folder, recursive=False)
+    assert [path.name for path in paths] == ["p1.jpg", "p2.jpg", "p10.jpg"]
+    report = project_service.import_paths(project, paths)
+    assert len(report.added_page_ids) == 3
+    assert [page.original_name for page in project.pages] == ["p1.jpg", "p2.jpg", "p10.jpg"]
 
 
 def test_duplicate_is_ignored(project):

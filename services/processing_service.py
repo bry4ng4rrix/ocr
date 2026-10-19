@@ -22,7 +22,8 @@ from models import (ImageBlock, Issue, JobStatus, LayoutSettings, OcrResult, Pag
                     ProgressEvent, Project, Severity, new_id)
 from models.errors import BookOcrError, JobAlreadyRunningError, ProcessingError
 from models.project import utc_now
-from services import (image_service, layout_service, ocr_service, orientation_service, project_service)
+from services import (image_service, layout_service, ocr_service, orientation_service, project_service,
+                      routing_service)
 
 logger = logging.getLogger("bookocr.processing")
 
@@ -47,6 +48,21 @@ project_lock = project_service.project_lock
 
 def ocr_result_path(project: Project, page: Page) -> Path:
     return project_service.project_dir(project) / "ocr" / f"{page.id}.json"
+
+
+def archive_ocr_result(project: Project, page: Page) -> Path | None:
+    """Copie le résultat OCR courant vers ocr/history/ avant une nouvelle tentative (jamais d'écrasement silencieux)."""
+    path = ocr_result_path(project, page)
+    if not path.exists():
+        return None
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    destination = project_service.project_dir(project) / "ocr" / "history" / page.id / f"{stamp}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    versions = sorted(destination.parent.glob("*.json"))
+    for old in versions[:-config.HISTORY_DEPTH]:
+        old.unlink(missing_ok=True)
+    return destination
 
 
 def working_image_path(project: Project, page: Page) -> Path:
@@ -124,6 +140,7 @@ def run_ocr(project: Project, page: Page) -> list[Issue]:
     gray = image_service.prepare_ocr_image(working, illustrations)
     paths = project_service.page_paths(project, page)
     image_service.write_png(gray, paths.ocr_input)
+    archive_ocr_result(project, page)
     result = ocr_service.run_ocr(gray, project.languages, psm=project.ocr_psm, cache_dir=paths.cache_dir)
     _write_json(ocr_result_path(project, page), result.model_dump_json())
     page.ocr_signature = page.geometry.signature()
@@ -151,6 +168,8 @@ def run_layout(project: Project, page: Page) -> tuple[Page, list[Issue]]:
     issues = [issue.model_copy(update={"page_id": page.id}) for issue in result.issues]
     issues += extract_page_images(project, merged, working)
     merged.status = PageStatus.ANALYSED
+    quality = routing_service.route_page(project, merged, project_service.project_dir(project))
+    issues += quality.issues
     return merged, issues
 
 
