@@ -1,0 +1,26 @@
+# Lancement : docker compose up -d   →   http://<serveur>:8501
+# Image : construite localement (build) ou publiée par la CI (IMAGE=ghcr.io/<compte>/ocr:latest).
+services:
+  app:
+    image: ${IMAGE:-ocr-numerisation:latest}
+    build:
+      context: .
+      target: runtime
+    container_name: ocr-numerisation
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8501}:8501"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BOOKOCR_DATA_DIR: /data
+      # Ollama facultatif : s'il tourne sur l'hôte (OLLAMA_HOST=0.0.0.0), mettre OLLAMA_ENABLED=true dans .env
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ocr-data:/data
+
+volumes:
+  ocr-data:

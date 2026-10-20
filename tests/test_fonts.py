@@ -9,10 +9,13 @@ import pytest
 import config
 from models.errors import ExportError
 from services import fonts
+from tests.fixtures import synthetic
 
-LIBERATION_DIR = Path("/usr/share/fonts/liberation")
-requires_liberation = pytest.mark.skipif(not (LIBERATION_DIR / "LiberationSerif-Regular.ttf").is_file(),
-                                         reason="polices Liberation absentes de /usr/share/fonts/liberation")
+# Dossier des polices Liberation, quelle que soit la distribution (Arch : liberation/ ; Debian : truetype/liberation/).
+_LIBERATION_SERIF = synthetic._installed_fonts().get("LiberationSerif-Regular.ttf")
+LIBERATION_DIR = _LIBERATION_SERIF.parent if _LIBERATION_SERIF else Path("/usr/share/fonts/liberation")
+requires_liberation = pytest.mark.skipif(_LIBERATION_SERIF is None,
+                                         reason="polices Liberation absentes de /usr/share/fonts")
 
 
 @pytest.fixture

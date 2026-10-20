@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 from models import (Alignment, BlockKind, ColumnBand, ComposedPage, ImageElement, Margins, PageCategory, Project,
                     Rect, ReconstructionMode, ResolvedStyle, Severity, TextElement)
 from services import document_service
+from tests.fixtures import synthetic
 from services.document_service import (STYLE_NAMES, anchor_problems, build_docx, columns_element, frame_element,
                                        inspect_docx, style_differences)
 
@@ -169,7 +170,7 @@ def make_source_image(page: ComposedPage, path: Path, dpi: int = 100) -> Path:
     scale = dpi / 72
     canvas = Image.new("RGB", (round(page.width_pt * scale), round(page.height_pt * scale)), (250, 248, 242))
     draw = ImageDraw.Draw(canvas)
-    font_path = "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf"
+    font_path = synthetic.font_path("serif")
     for image in [*page.backgrounds, *page.image_elements]:
         box = (round(image.rect.x_pt * scale), round(image.rect.y_pt * scale))
         size = (round(image.rect.width_pt * scale), round(image.rect.height_pt * scale))

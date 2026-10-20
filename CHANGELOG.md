@@ -4,6 +4,14 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Ajouté — 2026-10-20 (Docker et CI/CD)
+- `Dockerfile` à deux cibles :
+  - `test` : suite de tests dans l'environnement de production ;
+  - `runtime` : Python 3.14, Tesseract `fra`/`deu`/`eng`/`osd`, polices Liberation et DejaVu, utilisateur non root, volume `/data`, contrôle de santé.
+- `.dockerignore` (données privées, `.env` et environnements exclus de l'image), `docker-compose.yml`, `deploy/deploy.sh` (mise à jour et attente du contrôle de santé).
+- Workflow `.github/workflows/ci-cd.yml` : tests, puis image publiée sur GHCR, puis déploiement SSH sur le VPS. Les secrets sont lus dans GitHub et aucun n'est dans le dépôt. Documentation : `docs/DEPLOYMENT.md`.
+- Tests portables : les polices de test sont cherchées par nom de fichier dans `/usr/share/fonts` (chemins Arch et Debian/Ubuntu).
+
 ### Ajouté — 2026-10-19 (pages avec tableau)
 - Nouveau type de page « Avec tableau(x) » avec son prix (onglet Prix, bilan de la numérisation). Détection (`scanning_service.has_table`) : au moins 3 traits fins horizontaux et 3 verticaux, avec au moins 9 croisements ; les aplats et les photos sont exclus. Ordre de priorité : couverture, tableau, image, texte seul.
 - Les pages déjà classées sont reclassées automatiquement (`CLASSIFIER_VERSION = 2`), sauf celles dont le type a été choisi à la main. Un ancien `pricing.json` sans prix de tableau se charge (prix 0).

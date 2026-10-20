@@ -51,6 +51,20 @@ cp .env.example .env            # OLLAMA_ENABLED=true, OLLAMA_AUTO_APPLY=false
 
 Gemma ne fait qu'analyser : ses recommandations, validées par une liste blanche, ne sont appliquées que si une mesure les confirme, et jamais sans aperçu en mode par défaut. Sur ce poste (CPU), une analyse prend environ 2 minutes par page. Détails et mesures : [docs/gemma3-scanning.md](docs/gemma3-scanning.md).
 
+## Docker et déploiement
+
+```bash
+docker compose up -d --build        # http://localhost:8501, données dans le volume Docker ocr-data
+docker build --target test -t ocr-numerisation:test . && docker run --rm ocr-numerisation:test   # tests
+```
+
+CI/CD GitHub Actions (`.github/workflows/ci-cd.yml`) :
+1. tests dans l'image Docker ;
+2. image publiée sur `ghcr.io/<compte>/ocr` ;
+3. déploiement SSH sur le VPS si les secrets `VPS_*` sont configurés.
+
+Détails : [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 ## Tests
 
 ```bash
@@ -67,6 +81,7 @@ BOOKOCR_TEST_OLLAMA=1 .venv/bin/python -m pytest -q -m ollama tests/test_ollama_
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Contrats des services et modèles |
 | [docs/TECHNICAL_DECISIONS.md](docs/TECHNICAL_DECISIONS.md) | Décisions (OCR, persistance, modes DOCX) |
 | [docs/pipeline.md](docs/pipeline.md) | Enchaînement des étapes |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, CI/CD, VPS |
 | [docs/gemma3-scanning.md](docs/gemma3-scanning.md) | Numérisation intelligente, Ollama et Gemma 3, mesures réelles |
 | [docs/quality-control.md](docs/quality-control.md) | Contrôles de qualité (reconstruction et numérisation) |
 | [AGENTS.md](AGENTS.md) | Règles de développement |

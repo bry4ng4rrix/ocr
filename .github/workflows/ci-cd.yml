@@ -1,0 +1,158 @@
+# CI/CD — tests dans l'image Docker, publication sur GHCR, déploiement SSH sur le VPS.
+#
+# Secrets à créer (Settings › Secrets and variables › Actions), pour le déploiement seulement :
+#   VPS_HOST       adresse du serveur (ex. 157.173.103.147)
+#   VPS_USER       utilisateur SSH (ex. garrix)
+#   VPS_SSH_KEY    clé privée SSH autorisée sur le serveur (recommandé)   — ou —
+#   VPS_PASSWORD   mot de passe SSH (déconseillé)
+#   VPS_PATH       dossier de l'application sur le serveur (facultatif, défaut : /home/garrix/ocr)
+# Sans VPS_HOST, le déploiement est simplement ignoré : tests et image fonctionnent quand même.
+name: CI/CD
+
+on:
+  push:
+    branches: [main, audit-phase1]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/ocr
+
+jobs:
+  test:
+    name: Tests (dans l'image Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Construire l'image de test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          load: true
+          tags: ocr-numerisation:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Lancer les tests
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD/reports:/reports" ocr-numerisation:test \
+            python -m pytest -q -p no:cacheprovider --junitxml=/reports/junit.xml
+
+      - name: Rapport de tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit
+          path: reports/junit.xml
+          if-no-files-found: ignore
+
+  image:
+    name: Image de production (GHCR)
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Étiquettes de l'image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Construire et publier
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Déploiement sur le VPS
+    needs: image
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PATH: ${{ secrets.VPS_PATH || '/home/garrix/ocr' }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/ocr:${{ needs.image.outputs.tag }}
+    steps:
+      - name: Vérifier la configuration
+        id: check
+        run: |
+          if [ -z "$VPS_HOST" ]; then
+            echo "Secret VPS_HOST absent : déploiement ignoré."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.enabled == 'true'
+
+      - name: Copier les fichiers de déploiement
+        if: steps.check.outputs.enabled == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          source: "docker-compose.yml,deploy/deploy.sh"
+          target: ${{ env.VPS_PATH }}
+
+      - name: Mettre à jour l'application
+        if: steps.check.outputs.enabled == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          envs: IMAGE,VPS_PATH
+          script: |
+            set -e
+            cd "$VPS_PATH"
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            IMAGE="$IMAGE" sh deploy/deploy.sh

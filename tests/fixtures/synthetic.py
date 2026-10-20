@@ -24,13 +24,16 @@ MARGIN = int(0.12 * PAGE_W)
 PAPER = (250, 248, 242)
 INK = (25, 25, 25)
 
+# Noms de fichiers cherchés sous /usr/share/fonts, quelle que soit la distribution (Arch : liberation/, TTF/ ;
+# Debian et Ubuntu, donc l'image Docker et la CI : truetype/liberation/, truetype/dejavu/).
 FONT_CANDIDATES = {
-    ("serif", False, False): ["liberation/LiberationSerif-Regular.ttf", "TTF/DejaVuSerif.ttf"],
-    ("serif", True, False): ["liberation/LiberationSerif-Bold.ttf", "TTF/DejaVuSerif-Bold.ttf"],
-    ("serif", False, True): ["liberation/LiberationSerif-Italic.ttf", "TTF/DejaVuSerif-Italic.ttf"],
-    ("sans", False, False): ["liberation/LiberationSans-Regular.ttf", "TTF/DejaVuSans.ttf"],
-    ("sans", True, False): ["liberation/LiberationSans-Bold.ttf", "TTF/DejaVuSans-Bold.ttf"],
+    ("serif", False, False): ["LiberationSerif-Regular.ttf", "DejaVuSerif.ttf"],
+    ("serif", True, False): ["LiberationSerif-Bold.ttf", "DejaVuSerif-Bold.ttf"],
+    ("serif", False, True): ["LiberationSerif-Italic.ttf", "DejaVuSerif-Italic.ttf"],
+    ("sans", False, False): ["LiberationSans-Regular.ttf", "DejaVuSans.ttf"],
+    ("sans", True, False): ["LiberationSans-Bold.ttf", "DejaVuSans-Bold.ttf"],
 }
+FONT_ROOT = Path("/usr/share/fonts")
 
 FRENCH_PARAGRAPHS = [
     "Le lendemain matin, nous quittâmes la ville avant l'aube. La route longeait la rivière, "
@@ -130,11 +133,16 @@ class SyntheticPage:
 
 
 @lru_cache(maxsize=None)
+def _installed_fonts() -> dict[str, Path]:
+    return {path.name: path for path in sorted(FONT_ROOT.rglob("*.ttf"))} if FONT_ROOT.is_dir() else {}
+
+
+@lru_cache(maxsize=None)
 def font_path(style: str = "serif", bold: bool = False, italic: bool = False) -> str:
-    for relative in FONT_CANDIDATES.get((style, bold, italic), FONT_CANDIDATES[(style, False, False)]):
-        candidate = Path("/usr/share/fonts") / relative
-        if candidate.exists():
-            return str(candidate)
+    installed = _installed_fonts()
+    for name in FONT_CANDIDATES.get((style, bold, italic), FONT_CANDIDATES[(style, False, False)]):
+        if name in installed:
+            return str(installed[name])
     raise RuntimeError("Aucune police TrueType de test trouvée (Liberation ou DejaVu)")
 
 
