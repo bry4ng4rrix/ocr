@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 
 import config
 from models.errors import BookOcrError, ExportError
+from models.geometry import MM_TO_PT
 from models.ocr import OcrResult, OcrWord
 from models.reports import Issue, Severity
 from models.scanning import ProbeResult, SearchablePageInput, SearchablePdfReport, SearchablePdfValidation
@@ -135,39 +136,63 @@ def _write_words(page, words: list[OcrWord], font, fontfile: str, area) -> int:
     return written
 
 
+def _oriented(size: tuple[float, float], orientation: str, landscape_image: bool) -> tuple[float, float]:
+    """Taille de page selon l'orientation : portrait, paysage, ou « auto » (même sens que la photo)."""
+    short, long = min(size), max(size)
+    if orientation == "portrait" or (orientation == "auto" and not landscape_image):
+        return short, long
+    return long, short
+
+
 def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi: int | None = None, *,
-                         uniform: bool = False, margin: float = UNIFORM_MARGIN) -> SearchablePdfReport:
+                         uniform: bool = False, margin: float = UNIFORM_MARGIN,
+                         paper_mm: tuple[float, float] | None = None, orientation: str = "auto",
+                         margin_mm: float | None = None) -> SearchablePdfReport:
     """Un PDF : une page par entrée, dans l'ordre ; photographie finale visible, mots OCR invisibles.
 
-    L'image (JPEG final, sans EXIF) est insérée sans recompression ; la page n'est jamais tournée. Par défaut
-    la page a la taille de l'image. `uniform=True` : toutes les pages ont le même format (taille médiane des
-    images + `margin` de chaque côté) ; chaque image y est ajustée sans déformation et centrée (fond blanc).
-    Si l'entrée a un `content_box` (page à fond supprimé), c'est ce bloc de contenu qui est centré.
+    L'image (JPEG final, sans EXIF) est insérée sans recompression ; la page n'est jamais tournée.
+    - par défaut : la page a la taille de l'image ;
+    - `uniform=True` : format commun = taille médiane des images, plus la marge ;
+    - `paper_mm=(largeur, hauteur)` : format papier (A4…), plus la marge `margin_mm` (10 mm par défaut).
+    Formats communs : `orientation` « auto » (chaque page suit le sens de sa photo), « portrait » ou
+    « paysage » ; chaque image est ajustée dans la zone utile sans déformation et centrée (fond blanc). Si
+    l'entrée a un `content_box` (page à fond supprimé), c'est ce bloc de contenu qui est centré.
     Les mots sont écrits en mode de rendu 3 (invisibles, pas de texte blanc) dans leur boîte.
     """
     import pymupdf
 
     if not pages:
         raise ExportError("Aucune page à exporter.")
+    if orientation not in ("auto", "portrait", "landscape"):
+        raise ExportError("Orientation de page inconnue.", detail=orientation)
     dpi = int(dpi or config.SCAN_PDF_DPI)
     output = Path(output)
     report = SearchablePdfReport(output=str(output), expected_pages=len(pages), dpi=dpi)
     fontfile, font = _ocr_font()
     images = [_jpeg_bytes(item.image_path) for item in pages]
     points = 72.0 / dpi
-    if uniform:
-        # Zone de contenu commune = taille médiane des pages du livre ; chaque image y est ajustée (proportions
-        # gardées) et centrée : des photos de résolutions différentes donnent des pages de même taille.
-        content_width = float(np.median([width for _, width, _ in images])) * points
-        content_height = float(np.median([height for _, _, height in images])) * points
-        page_width, page_height = content_width * (1 + 2 * margin), content_height * (1 + 2 * margin)
+    uniform = uniform or paper_mm is not None
+    if paper_mm is not None:
+        base = (paper_mm[0] * MM_TO_PT, paper_mm[1] * MM_TO_PT)
+        margin_pt = (10.0 if margin_mm is None else margin_mm) * MM_TO_PT
+    elif uniform:
+        # Format commun = taille médiane des pages du livre : des photos de résolutions différentes donnent
+        # des pages de même taille.
+        median = (float(np.median([width for _, width, _ in images])) * points,
+                  float(np.median([height for _, _, height in images])) * points)
+        margin_pt = margin_mm * MM_TO_PT if margin_mm is not None else margin * min(median)
+        base = (median[0] + 2 * margin_pt, median[1] + 2 * margin_pt)
     document = pymupdf.open()
     try:
         document.set_metadata({"creator": "book-ocr (numérisation)", "producer": f"PyMuPDF {pymupdf.VersionBind}"})
         for index, (item, (data, width, height)) in enumerate(zip(pages, images)):
             if uniform:
+                page_width, page_height = _oriented(base, orientation, landscape_image=width > height)
+                usable_width, usable_height = page_width - 2 * margin_pt, page_height - 2 * margin_pt
+                if usable_width <= 10 or usable_height <= 10:
+                    raise ExportError("Marge trop grande pour ce format de page.")
                 page = document.new_page(width=page_width, height=page_height)
-                fit = min(content_width / width, content_height / height)
+                fit = min(usable_width / width, usable_height / height)
                 shown_width, shown_height = width * fit, height * fit
                 if item.content_box is not None:
                     # Centre du bloc de contenu au centre de la page (fond blanc : le blanc débordant est coupé).
@@ -188,8 +213,11 @@ def build_searchable_pdf(pages: Sequence[SearchablePageInput], output: Path, dpi
             ocr = _read_ocr(item.ocr_path)
             if ocr is None or not ocr.words:
                 report.pages_without_text.append(index)
-                report.issues.append(Issue(code="scan_pdf_no_text", severity=Severity.WARNING, page_id=item.page_id,
-                                           message=f"Page {index + 1} : aucune couche de texte (OCR absent ou vide)."))
+                deliberate = item.ocr_path is None             # OCR non demandé : information, pas un défaut
+                report.issues.append(Issue(code="scan_pdf_no_text", page_id=item.page_id,
+                                           severity=Severity.INFO if deliberate else Severity.WARNING,
+                                           message=f"Page {index + 1} : aucune couche de texte "
+                                                   f"({'OCR non demandé' if deliberate else 'OCR absent ou vide'})."))
                 continue
             if (ocr.width, ocr.height) != (width, height):
                 report.issues.append(Issue(code="scan_pdf_ocr_size", severity=Severity.WARNING, page_id=item.page_id,

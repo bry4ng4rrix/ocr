@@ -6,7 +6,7 @@
 
 Un **PDF par livre**. Chaque page du PDF montre la **photographie traitée** : redressée, recadrée, orientée, exposition et contraste corrigés avec prudence, couleurs conservées. Une **couche OCR invisible** y est posée, alignée mot par mot, sélectionnable et recherchable. Le PDF n'est **jamais** une reconstruction du livre ni une image générée. La reconstruction DOCX reste un module séparé (écrans Éditeur et Export).
 
-Écran : **Traitement › Numérisation intelligente** (`components/screens/smart_scan.py`).
+Écran : **Traitement › Numérisation intelligente** (`components/screens/smart_scan.py`) ; l'analyse d'une page se lance dans la fenêtre de retouche, outil « Analyse Gemma ».
 
 ## 2. Rôle de Gemma : assistant d'analyse, jamais exécutant
 

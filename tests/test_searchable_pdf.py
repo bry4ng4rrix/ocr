@@ -187,3 +187,34 @@ def test_uniform_layout_centres_pages_of_different_sizes(tmp_path, book):
         assert area.contains(hit)
     validation = pdf_export.validate_searchable_pdf(output, pages)
     assert validation.passed, validation.issues
+
+
+@pytest.mark.parametrize("orientation, expected", [
+    ("portrait", [(210, 297), (210, 297)]),
+    ("landscape", [(297, 210), (297, 210)]),
+    ("auto", [(210, 297), (297, 210)]),          # chaque page suit le sens de sa photo
+])
+def test_paper_format_and_orientation(tmp_path, book, orientation, expected):
+    wide = _page(tmp_path, "large", ["Tabelle", "Spalte"])
+    Image.open(wide.image_path).rotate(90, expand=True).save(wide.image_path, "JPEG", quality=92)   # photo en paysage
+    pages = [book[0], wide]
+    output = tmp_path / f"a4_{orientation}.pdf"
+    report = pdf_export.build_searchable_pdf(pages, output, paper_mm=(210, 297), orientation=orientation,
+                                             margin_mm=15)
+    assert report.page_count == 2
+    margin = 15 / 25.4 * 72
+    with pymupdf.open(output) as document:
+        sizes = [(round(page.rect.width / 72 * 25.4), round(page.rect.height / 72 * 25.4)) for page in document]
+        assert sizes == expected
+        for page in document:
+            area = page.get_image_rects(page.get_images()[0][0])[0]
+            assert area.x0 >= margin - 0.5 and area.y0 >= margin - 0.5            # marge respectée
+            assert area.x1 <= page.rect.width - margin + 0.5 and area.y1 <= page.rect.height - margin + 0.5
+    assert pdf_export.validate_searchable_pdf(output, pages).passed
+
+
+def test_unknown_orientation_and_huge_margin_are_refused(tmp_path, book):
+    with pytest.raises(ExportError):
+        pdf_export.build_searchable_pdf(book[:1], tmp_path / "x.pdf", paper_mm=(210, 297), orientation="diagonal")
+    with pytest.raises(ExportError):
+        pdf_export.build_searchable_pdf(book[:1], tmp_path / "y.pdf", paper_mm=(210, 297), margin_mm=200)

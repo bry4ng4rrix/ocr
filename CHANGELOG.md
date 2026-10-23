@@ -4,6 +4,44 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Modifié — 2026-10-23 (boutons regroupés par objectif)
+- Numérisation intelligente (navigation latérale et six étapes inchangées) :
+  - étape 1 : les options de traitement (OCR, fond, Gemma) sont réunies ; « Centrer le contenu » rejoint la mise en page du PDF (étape 5) ;
+  - étape 3 : affichage galerie ou tableau, filtre et « Valider toutes les pages » sur une ligne ; le tableau des pages devient une vue des résultats ;
+  - étape 4 : « Retoucher cette page » et « Modifier toutes les pages… » côte à côte, chacun dans une fenêtre ;
+  - étape 5 : « Mise en page » puis « Options d'export », puis création et téléchargement.
+- Fenêtre de retouche : chaque outil porte ses boutons (détection des bords dans Recadrage ; amélioration automatique, original et réglages précédents dans Réglages ; analyse dans Analyse Gemma ; traiter et valider dans Aperçu).
+- Aucune fonctionnalité retirée.
+
+### Ajouté — 2026-10-23 (format de sortie, orientation, modifications de toutes les pages)
+- Format des pages du PDF (étape 5) :
+  - taille de chaque page ;
+  - format commun du livre ;
+  - A3, A4, A5, B5, Letter, Legal ou personnalisé (mm) ;
+  - orientation automatique (chaque page suit le sens de sa photo), portrait ou paysage ;
+  - marge en mm ;
+  - la photo est ajustée sans déformation ni recompression, la couche de texte suit. Réglages enregistrés par livre (l'ancien `uniform_pages` est converti).
+- « Modifier toutes les pages » (étape 4), pour toutes les pages ou les pages à vérifier, retraitées ensuite en arrière-plan avec un historique par page :
+  - recadrage commun à la souris sur une page de référence, ou retour au contour automatique ;
+  - rognage supplémentaire des bords (`extra_*`), qui s'ajoute au rognage automatique et reste en place quand la page est retraitée ;
+  - rotation.
+- Rognage d'un bord porté à 15 % au plus.
+
+### Ajouté et modifié — 2026-10-23 (validation en bloc, PDF en un clic, OCR facultatif)
+- Numérisation intelligente :
+  - bouton « Valider toutes les pages » : valide les pages dont l'image et le texte sont à jour ; les pages non prêtes sont listées (`scanning_service.validate_all`) ;
+  - un seul bouton « Créer le PDF » : le PDF est enregistré dans le projet, puis le téléchargement s'affiche. Au retour sur l'écran, le PDF enregistré est retrouvé ; il est proposé tant qu'il est à jour (empreinte des pages, images, OCR et options), sinon « Mettre à jour le PDF » ;
+  - le fichier n'est lu qu'au clic sur « Télécharger » (pas de 100 Mo envoyés à chaque rafraîchissement).
+- PDF créé et enregistré automatiquement à la fin d'un traitement en arrière-plan si toutes les pages sont prêtes (réglage du livre `auto_export`, activé par défaut).
+- Options du PDF enregistrées avec le livre : format uniforme, pages à vérifier incluses.
+- Réglage « Reconnaître le texte (OCR) » à l'étape 1 (`run_ocr`). Désactivé : traitement plus rapide, PDF sans couche texte. Réactivé : les pages concernées sont signalées « à retraiter ».
+- Les 3 derniers PDF de numérisation sont gardés par livre (`BOOKOCR_SCAN_KEEP_EXPORTS`) ; les plus anciens, recréables, sont effacés.
+
+### Corrigé — 2026-10-23
+- Deux exports créés dans la même seconde s'écrasaient (nom horodaté à la seconde) : un suffixe `-2`, `-3`… rend désormais le nom unique (DOCX et PDF).
+- Le dernier export affiché n'était pas lié au livre (mémoire de session) : il est maintenant relu dans le dossier `exports/` du livre.
+- Changer « Supprimer le fond » ou « Centrer le contenu » remettait les autres réglages du livre à leur valeur par défaut.
+
 ### Ajouté — 2026-10-20 (Docker et CI/CD)
 - `Dockerfile` à deux cibles :
   - `test` : suite de tests dans l'environnement de production ;

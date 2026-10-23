@@ -80,7 +80,8 @@ models/
   project.py                 ReconstructionMode, TypographySettings, ExportSettings, Project
   reports.py                 Issue, ProcessingReport, ExportReport, ValidationReport
 services/                    voir §5 (contrats)
-components/                  un module par écran + widgets réutilisables (box_editor, sortable_pages, compare_view)
+components/                  écrans (screens/), widgets réutilisables (box_editor, sortable_pages, compare_view, crop_selector),
+                             scan/ (fenêtres et éléments communs des écrans de numérisation, §12)
 tests/                       pytest ; fixtures/synthetic.py (pages avec vérité terrain)
 data/                        données de travail (exclu de Git)
 docs/                        documentation technique
@@ -391,7 +392,7 @@ scan_runner.start(book_ids, page_ids=None, *, retry_failed=False, use_ai=None) ;
     # un seul worker de numérisation par processus ; livres traités l'un après l'autre
 ```
 
-Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement). Déroulé :
+Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement ; voir §12). Déroulé :
 1. livre (existant ou nouveau) et toutes ses photos (téléversement ou dossier local) ;
 2. un bouton lance le traitement en arrière-plan ;
 3. galerie avant/après avec les modifications (`describe_changes`) ;
@@ -434,4 +435,57 @@ scanning_service.set_page_kind(project, page_id, kind | None) ; scanning_service
 pricing_service.load_prices() / save_prices(PricingSettings) ; pricing_service.estimate(stats, prices) -> BookPriceEstimate
 ```
 
-Seules les pages `COMPLETED` (traitement fini, ou page à vérifier validée) sont comptées. Le type effectif est le type corrigé par l'utilisateur s'il existe, sinon le type détecté. Écrans : tableau de bord (gestion des projets), « Prix » (groupe Projet), section 6 de « Numérisation intelligente ».
+Seules les pages `COMPLETED` (traitement fini, ou page à vérifier validée) sont comptées. Le type effectif est le type corrigé par l'utilisateur s'il existe, sinon le type détecté. Écrans : tableau de bord (gestion des projets), « Prix » (groupe Projet), étape 6 de « Numérisation intelligente ».
+
+## 10. PDF du livre en un clic, validation en bloc, OCR facultatif (23/10/2026)
+
+```python
+ScanBookSettings: run_ocr, remove_background, center_content, uniform_pages, include_unvalidated, auto_export
+scanning_service.validate_all(project) -> ValidateAllSummary(validated, already, not_ready)   # numéros de page
+scanning_service.export_book_pdf(project, *, include_unvalidated=None, uniform=None, center_content=None,
+                                 automatic=False)    # défauts = réglages du livre ; écrit <nom>.pdf,
+                                                     # <nom>.validation.json et <nom>.export.json (BookPdfExport)
+scanning_service.latest_book_pdf(project) -> BookPdfExport | None
+scanning_service.is_export_current(project, export, settings=None) -> bool   # export_signature(project, settings)
+scanning_service.export_problems(project, settings=None) -> list[str]        # vide : le PDF peut être créé
+scanning_service.auto_export_if_ready(project) -> BookPdfExport | None       # appelé par scan_runner en fin de lot
+```
+
+- `export_signature` : ordre des pages, `final_signature`, `ocr_signature`, présence de l'OCR, bloc de contenu, options. L'état « validé » ne compte que si les pages non validées sont exclues.
+- `run_ocr=False` : `_ocr` n'est pas lancé, `ScanPageRecord.ocr_skipped=True` et la page est à jour sans `ocr.json`. Si l'OCR est réactivé, ces pages apparaissent dans `export_problems` (« retraitez le livre »).
+
+
+## 11. Format de sortie et modifications en bloc (23/10/2026)
+
+```python
+ScanBookSettings.page_format     # "image" | "median" | "A3" | "A4" | "A5" | "B5" | "Letter" | "Legal" | "custom"
+ScanBookSettings.orientation     # "auto" (chaque page suit sa photo) | "portrait" | "landscape"
+ScanBookSettings.margin_mm, custom_width_mm, custom_height_mm ; paper_size_mm (propriété) ; uniform_pages (propriété)
+pdf_export.build_searchable_pdf(..., uniform=False, paper_mm=None, orientation="auto", margin_mm=None)
+ScanAdjustments.extra_left/top/right/bottom   # rognage supplémentaire, appliqué après crop_* ; gardé au retraitement
+scanning_service.apply_quad_to_pages(project, corners | None, page_ids=None) -> list[str]      # pages modifiées
+scanning_service.apply_rotation_to_pages(project, quarter_turns, page_ids=None) -> list[str]
+scanning_service.apply_trim_to_pages(project, {"left"|"top"|"right"|"bottom": fraction} | None, page_ids=None) -> list[str]
+```
+
+L'écran lance ensuite `scan_runner.start([livre], pages_modifiées, use_ai=False)`. Comme la géométrie ou l'image finale ont changé, `process_page` refait la géométrie (rejouée, sans nouvelle détection), le rendu et l'OCR. Le PDF automatique est recréé en fin de lot.
+
+
+## 12. Écran de numérisation et regroupement des boutons (23/10/2026)
+
+Navigation inchangée dans la barre latérale (`st.navigation`, groupes Projet, Traitement, Mise en page, Livre). L'écran `components/screens/smart_scan.py` garde ses six étapes ; les boutons d'un même objectif sont sur une même ligne :
+
+| Étape | Groupe de boutons |
+|---|---|
+| 1. Livre et photos | options de traitement (OCR, fond, Gemma) puis bouton de traitement |
+| 2. Traitement | relancer les erreurs, arrêter |
+| 3. Résultats | affichage (galerie, tableau), filtre, valider toutes les pages ; tableau : traiter la sélection, retoucher la sélection |
+| 4. Retouche | choix de la page, retoucher cette page, modifier toutes les pages |
+| 5. PDF du livre | mise en page (format, orientation, marge, centrage) et options d'export ; créer / télécharger / recréer |
+
+Modules de l'écran (`components/scan/`, sans logique métier) :
+- `shared.py` : libellés et constantes, état de Gemma (`ai_status`, testé et mis en cache), `use_ai`, `cached_image`, `run_action`, `runner_caption`, `rerun_when_runner_stops` ;
+- `retouch.py` : fenêtre « Retoucher la page » (`open_retouch(page_id)`, `show_if_open(project)`). Chaque outil porte ses boutons : Aperçu (traiter, valider), Recadrage (nouvelle détection des bords, contour automatique), Réglages (améliorer automatiquement, original, réglages précédents, enregistrer), Orientation et type, Analyse Gemma (analyser, appliquer la proposition) ;
+- `bulk.py` : fenêtre « Modifier toutes les pages » (`open_bulk()`, `show_if_open(project)`), §11.
+
+Une fenêtre s'ouvre par une clé de session (`retouch.DIALOG_KEY`, `bulk.DIALOG_KEY`) lue en fin d'écran.

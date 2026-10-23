@@ -79,14 +79,23 @@ _GEOMETRY_ACTIONS = {ScanAction.ROTATE, ScanAction.DETECT_PAGE, ScanAction.PERSP
                      ScanAction.MANUAL_REVIEW}
 
 
-def crop_edges(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray:
-    """Rogne chaque bord de la fraction demandée (bande de fond restée après redressement) ; copie."""
+def _crop_fractions(rgb: np.ndarray, left: float, top: float, right: float, bottom: float) -> np.ndarray:
     height, width = rgb.shape[:2]
-    x0, x1 = round(width * adjustments.crop_left), width - round(width * adjustments.crop_right)
-    y0, y1 = round(height * adjustments.crop_top), height - round(height * adjustments.crop_bottom)
+    x0, x1 = round(width * left), width - round(width * right)
+    y0, y1 = round(height * top), height - round(height * bottom)
     if x1 - x0 < 16 or y1 - y0 < 16:
-        return rgb.copy()
-    return rgb[y0:y1, x0:x1].copy()
+        return rgb
+    return rgb[y0:y1, x0:x1]
+
+
+def crop_edges(rgb: np.ndarray, adjustments: ScanAdjustments) -> np.ndarray:
+    """Rogne les bords : d'abord le rognage de la page (bande de fond restée après redressement), puis le
+    rognage supplémentaire choisi pour le livre (fractions de l'image déjà rognée) ; copie."""
+    out = _crop_fractions(rgb, adjustments.crop_left, adjustments.crop_top, adjustments.crop_right,
+                          adjustments.crop_bottom)
+    out = _crop_fractions(out, adjustments.extra_left, adjustments.extra_top, adjustments.extra_right,
+                          adjustments.extra_bottom)
+    return out.copy()
 
 
 def whiten_paper(rgb: np.ndarray, strength: float) -> np.ndarray:

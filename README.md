@@ -33,12 +33,14 @@ Copier [`.env.example`](.env.example) en `.env` au besoin (lu au démarrage). Pr
 
 ## Numérisation intelligente (PDF fidèle recherchable)
 
-Écran **Traitement › Numérisation intelligente** : un PDF par livre. Chaque page montre la photographie redressée, recadrée et corrigée avec prudence, en couleurs, avec une couche OCR **invisible** et recherchable alignée mot par mot.
+Écran **Traitement › Numérisation intelligente** : un PDF par livre. Chaque page montre la photographie redressée, recadrée et corrigée avec prudence, en couleurs, avec une couche OCR **invisible** et recherchable alignée mot par mot. Les boutons d'un même objectif sont regroupés à chaque étape.
 
-1. Tableau de bord : créer le livre (langues OCR, par exemple `fra` et `deu`) ; écran Pages : importer les photos dans l'ordre.
-2. Numérisation intelligente : « Traiter les pages en attente ». Le traitement tourne en arrière-plan, sans bloquer l'interface, une page à la fois. Il reprend après une interruption et relance les erreurs sur demande.
-3. Vérifier les pages « À vérifier » : rotation, recadrage manuel, réglages avec aperçu, puis « Valider la page ».
-4. « Exporter le PDF du livre » : le PDF et son rapport de validation (`.validation.json`) sont écrits dans `data/projects/<id>/exports/`.
+1. **Livre et photos** : choisir un livre ou en créer un (langues OCR, par exemple `fra` et `deu`), ajouter toutes ses photos (téléversement ou dossier local), régler les options de traitement (OCR, suppression du fond, Gemma), puis « Importer et traiter le livre ».
+2. **Traitement** : avancement en arrière-plan, une page à la fois, avec reprise après une interruption ; « Relancer les pages en erreur » et « Arrêter le traitement » côte à côte.
+3. **Résultats** : galerie avant/après ou tableau, filtre par état, « Valider toutes les pages ».
+4. **Retouche** : « Retoucher cette page » (fenêtre à outils : Aperçu, Recadrage, Réglages, Orientation et type, Analyse Gemma ; chaque outil porte ses propres boutons) ou « Modifier toutes les pages… » (recadrage commun, rognage, rotation).
+5. **PDF du livre** : mise en page (format, orientation, marge, centrage) et options d'export, puis « Créer le PDF » ; le téléchargement s'affiche dès qu'il est prêt. Le PDF et son rapport (`.validation.json`) sont écrits dans `data/projects/<id>/exports/`.
+6. **Statistiques et prix** des pages terminées.
 
 **Sans IA**, c'est le fonctionnement par défaut : OpenCV et Tesseract font tout le travail.
 

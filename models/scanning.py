@@ -11,12 +11,13 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from models.geometry import Box
+from models.geometry import Box, PageFormat
 from models.reports import Issue
 
 ANALYSIS_REASON_MAX = 400
+MAX_CROP = 0.15                         # rognage maximal d'un bord (fraction), page par page ou pour tout le livre
 HISTORY_MAX = 30
 
 
@@ -188,14 +189,27 @@ class ScanAdjustments(BaseModel):
     denoise: float = Field(default=0.0, ge=0, le=60)
     sharpness: float = Field(default=0.0, ge=0, le=60)
     white_balance: bool = False
-    crop_left: float = Field(default=0.0, ge=0.0, le=0.08)
-    crop_top: float = Field(default=0.0, ge=0.0, le=0.08)
-    crop_right: float = Field(default=0.0, ge=0.0, le=0.08)
-    crop_bottom: float = Field(default=0.0, ge=0.0, le=0.08)
+    crop_left: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    crop_top: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    crop_right: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    crop_bottom: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+
+    # Rognage supplémentaire choisi pour tout le livre (ou la page) : s'ajoute au rognage automatique ci-dessus
+    # et reste en place quand la page est retraitée.
+    extra_left: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    extra_top: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    extra_right: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
+    extra_bottom: float = Field(default=0.0, ge=0.0, le=MAX_CROP)
 
     @property
     def has_crop(self) -> bool:
-        return any((self.crop_left, self.crop_top, self.crop_right, self.crop_bottom))
+        return any((self.crop_left, self.crop_top, self.crop_right, self.crop_bottom, self.extra_left,
+                    self.extra_top, self.extra_right, self.extra_bottom))
+
+    @property
+    def extra_trim(self) -> dict[str, float]:
+        return {"extra_left": self.extra_left, "extra_top": self.extra_top, "extra_right": self.extra_right,
+                "extra_bottom": self.extra_bottom}
 
     def is_neutral(self) -> bool:
         return self == ScanAdjustments()
@@ -280,11 +294,65 @@ PAGE_KIND_LABELS = {PageKind.TEXT: "Texte seul", PageKind.TABLE: "Avec tableau(x
                     PageKind.COVER: "Couverture avec image"}
 
 
+PageOrientation = Literal["auto", "portrait", "landscape"]
+
+# Formats de sortie du PDF de numérisation (distincts des formats de livre détectés pour le DOCX).
+SCAN_PAGE_FORMATS: dict[str, PageFormat] = {fmt.name: fmt for fmt in [
+    PageFormat(name="A3", width_mm=297, height_mm=420),
+    PageFormat(name="A4", width_mm=210, height_mm=297),
+    PageFormat(name="A5", width_mm=148, height_mm=210),
+    PageFormat(name="B5", width_mm=176, height_mm=250),
+    PageFormat(name="Letter", width_mm=215.9, height_mm=279.4),
+    PageFormat(name="Legal", width_mm=215.9, height_mm=355.6),
+]}
+PAGE_FORMAT_IMAGE = "image"             # chaque page PDF a la taille de sa photo finale
+PAGE_FORMAT_MEDIAN = "median"           # format commun du livre : taille médiane des pages
+PAGE_FORMAT_CUSTOM = "custom"           # largeur × hauteur choisies (mm)
+
+
 class ScanBookSettings(BaseModel):
     """Réglages de numérisation d'un livre (data/projects/<id>/scan/settings.json)."""
 
+    run_ocr: bool = True                # reconnaissance du texte (couche invisible recherchable du PDF)
     remove_background: bool = True      # fond du papier supprimé (blanc), images conservées
     center_content: bool = True         # dans le PDF, le bloc de contenu est centré sur la page
+    page_format: str = PAGE_FORMAT_MEDIAN   # « image », « median », un nom de SCAN_PAGE_FORMATS ou « custom »
+    orientation: PageOrientation = "auto"   # auto : chaque page PDF suit le sens de sa photo
+    margin_mm: float = Field(default=10.0, ge=0, le=60)
+    custom_width_mm: float = Field(default=210.0, ge=50, le=1200)
+    custom_height_mm: float = Field(default=297.0, ge=50, le=1200)
+    include_unvalidated: bool = True    # le PDF inclut les pages « à vérifier » non validées
+    auto_export: bool = True            # PDF créé et enregistré automatiquement à la fin d'un traitement
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_uniform(cls, data):
+        """Ancien réglage `uniform_pages` (booléen) : faux = taille de chaque page, vrai = format commun."""
+        if isinstance(data, dict) and "uniform_pages" in data:
+            data = dict(data)
+            uniform = data.pop("uniform_pages")
+            data.setdefault("page_format", PAGE_FORMAT_MEDIAN if uniform else PAGE_FORMAT_IMAGE)
+        return data
+
+    @field_validator("page_format")
+    @classmethod
+    def _known_format(cls, value: str) -> str:
+        if value not in {PAGE_FORMAT_IMAGE, PAGE_FORMAT_MEDIAN, PAGE_FORMAT_CUSTOM, *SCAN_PAGE_FORMATS}:
+            raise ValueError(f"format de page inconnu : {value}")
+        return value
+
+    @property
+    def uniform_pages(self) -> bool:
+        """Toutes les pages PDF ont le même format (tout sauf « taille de chaque page »)."""
+        return self.page_format != PAGE_FORMAT_IMAGE
+
+    @property
+    def paper_size_mm(self) -> tuple[float, float] | None:
+        """Format papier choisi (largeur, hauteur en portrait), None pour « image » et « median »."""
+        if self.page_format == PAGE_FORMAT_CUSTOM:
+            return (min(self.custom_width_mm, self.custom_height_mm), max(self.custom_width_mm, self.custom_height_mm))
+        fmt = SCAN_PAGE_FORMATS.get(self.page_format)
+        return (fmt.width_mm, fmt.height_mm) if fmt else None
 
 
 class ScanPageRecord(BaseModel):
@@ -310,6 +378,7 @@ class ScanPageRecord(BaseModel):
     final_signature: str | None = None               # empreinte géométrie + réglages au moment du rendu
     ocr_file: str | None = None                      # scan/<page>/ocr.json (coordonnées sur final.jpg)
     ocr_signature: str | None = None                 # final_signature au moment de l'OCR
+    ocr_skipped: bool = False                        # OCR désactivé pour ce livre lors du rendu : pas de couche texte
     quality: QualityCheck | None = None
     content_box: Box | None = None                   # bloc de contenu (texte + images) sur final.jpg, fond exclu
     picture_share: float | None = None               # part de la page couverte par des images (final.jpg)
@@ -390,3 +459,21 @@ class BookScanStats(BaseModel):
     failed_pages: int = 0
     pending_pages: int = 0
     by_kind: dict[PageKind, int] = Field(default_factory=dict)   # pages terminées, par type effectif
+
+
+class BookPdfExport(BaseModel):
+    """PDF de numérisation enregistré (exports/<nom>.pdf + <nom>.export.json) ; `signature` dit s'il est à jour."""
+
+    pdf_file: str                          # relatif au projet
+    created_at: datetime = Field(default_factory=utc_now)
+    signature: str                         # empreinte des pages (ordre, images finales, OCR) et des options
+    automatic: bool = False                # créé à la fin d'un traitement, sans clic
+    settings: ScanBookSettings
+    report: SearchablePdfReport
+    validation: SearchablePdfValidation
+
+
+class ValidateAllSummary(BaseModel):
+    validated: list[int] = Field(default_factory=list)      # numéros de page validés par cette action
+    already: list[int] = Field(default_factory=list)        # déjà validés
+    not_ready: list[int] = Field(default_factory=list)      # pas traités, en erreur ou obsolètes : non validés

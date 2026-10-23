@@ -33,6 +33,8 @@ class RunnerStatus(BaseModel):
     failed: int = 0
     started_at: datetime | None = None
     seconds_per_page: float | None = None       # moyenne mesurée sur ce lancement
+    last_export: str | None = None              # dernier PDF créé automatiquement (relatif au projet)
+    export_message: str = ""                    # résultat de la création automatique du PDF
     message: str = ""
 
 
@@ -104,7 +106,21 @@ def run_book(book_id: str, page_ids: list[str] | None = None, *, retry_failed: b
         failed += int(record.error is not None)
         _record_timing(time.monotonic() - started, failed=record.error is not None)
         gc.collect()
+    if not (cancel_event is not None and cancel_event.is_set()):
+        _auto_export(book_id)
     return processed, failed
+
+
+def _auto_export(book_id: str) -> None:
+    """Fin de traitement : PDF créé et enregistré si le livre le demande et que toutes ses pages sont prêtes."""
+    try:
+        _update(current_page=None, export_message="Création automatique du PDF…")
+        export = scanning_service.auto_export_if_ready(project_service.open_project(book_id))
+        _update(last_export=export.pdf_file if export else None,
+                export_message=f"PDF enregistré : {export.pdf_file.rsplit('/', 1)[-1]}" if export else "")
+    except BookOcrError as error:
+        logger.warning("PDF automatique non créé pour le livre %s : %s", book_id, error)
+        _update(export_message=f"PDF automatique non créé : {error.user_message}")
 
 
 def _update(**values) -> None:

@@ -50,7 +50,13 @@ def export_path(project: Project, suffix: str, label: str) -> Path:
 def _filename(project: Project, suffix: str, label: str) -> Path:
     safe = re.sub(r"[^\w\-]+", "_", project.name, flags=re.UNICODE).strip("_") or "livre"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return exports_dir(project) / f"{safe}_{label}_{stamp}{suffix}"
+    folder = exports_dir(project)
+    path = folder / f"{safe}_{label}_{stamp}{suffix}"
+    counter = 2
+    while path.exists():                       # deux exports dans la même seconde ne s'écrasent pas
+        path = folder / f"{safe}_{label}_{stamp}-{counter}{suffix}"
+        counter += 1
+    return path
 
 
 def compose(project: Project, mode: ReconstructionMode | None = None,

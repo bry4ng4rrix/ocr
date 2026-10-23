@@ -26,9 +26,11 @@ from models import OcrResult, Page, PageStatus, Project
 from models.errors import BookOcrError, ExportError, ProcessingError
 from models.geometry import Point
 from models.reports import Issue, Severity
-from models.scanning import (AdjustmentPlan, AdjustmentSource, AnalysisRecord, BookScanStats, OrientationIssue,
-                             PageKind, QualityCheck, ScanAdjustments, ScanBookSettings, ScanPageRecord, ScanState, SearchablePageInput, SearchablePdfReport,
-                             SearchablePdfValidation, utc_now)
+from models.scanning import (AdjustmentPlan, AdjustmentSource, AnalysisRecord, BookPdfExport, BookScanStats,
+                             OrientationIssue, PageKind, QualityCheck, ScanAdjustments, ScanBookSettings,
+                             PAGE_FORMAT_IMAGE, PAGE_FORMAT_MEDIAN, ScanPageRecord, ScanState,
+                             SearchablePageInput, SearchablePdfReport,
+                             SearchablePdfValidation, ValidateAllSummary, utc_now)
 from repositories import scan_repository
 from services import (export_service, image_analysis_service, image_enhancement, image_quality_service,
                       image_service, ocr_service, pdf_export, processing_service, project_service)
@@ -43,6 +45,7 @@ TABLE_MIN_CROSSINGS = 9            # ... qui se croisent au moins 9 fois (grille
 COVER_PICTURE_SHARE = 0.6          # images sur plus de 60 % de la page : couverture / page illustrée
 IMAGE_PICTURE_SHARE = 0.03         # au moins 3 % d'images : page « avec image(s) »
 COVER_PAPER_MAX = 90.0             # pas de papier clair (fond sombre ou coloré pleine page) : couverture
+EXPORT_SUFFIX = ".export.json"     # fiche d'un PDF enregistré (signature, options, rapport)
 PREVIEW_SIDE = 1400                # aperçu interactif (curseurs) : calcul sur une copie réduite
 MIN_QUAD_SHARE = 0.05              # un recadrage manuel couvre au moins 5 % de la photo
 MIN_QUAD_ANGLE = 45.0              # angles intérieurs admis pour un recadrage manuel (degrés)
@@ -115,10 +118,10 @@ def final_signature(page: Page, adjustments: ScanAdjustments) -> str:
 
 
 def is_current(page: Page, record: ScanPageRecord) -> bool:
-    """Vrai si l'image finale et son OCR correspondent à la géométrie et aux réglages actuels."""
+    """Vrai si l'image finale et son OCR (ou l'OCR volontairement ignoré) correspondent aux réglages actuels."""
     signature = final_signature(page, record.adjustments)
     return (record.final_signature == signature and record.ocr_signature == signature
-            and record.final_file is not None and record.ocr_file is not None)
+            and record.final_file is not None and (record.ocr_file is not None or record.ocr_skipped))
 
 
 def load_straightened(project: Project, page: Page) -> np.ndarray:
@@ -303,8 +306,19 @@ def _render(project: Project, page: Page, record: ScanPageRecord, straightened: 
     return final
 
 
-def _ocr(project: Project, page: Page, record: ScanPageRecord, final: np.ndarray) -> OcrResult:
-    """OCR Tesseract de l'image finale : les boîtes sont normalisées sur final.jpg (alignement du PDF)."""
+def _ocr(project: Project, page: Page, record: ScanPageRecord, final: np.ndarray) -> OcrResult | None:
+    """OCR Tesseract de l'image finale : les boîtes sont normalisées sur final.jpg (alignement du PDF).
+
+    Livre réglé sans OCR (`run_ocr=False`) : rien n'est lu, la page n'aura pas de couche texte (None).
+    """
+    if not load_book_settings(project).run_ocr:
+        record.ocr_file, record.ocr_skipped = None, True
+        record.ocr_signature = record.final_signature
+        if record.quality is not None:
+            record.quality.ocr_mean_confidence = record.quality.ocr_word_count = None
+        record.timings_s.pop("ocr", None)
+        return None
+    record.ocr_skipped = False
     started = time.monotonic()
     ocr_service.check_languages(project.languages)
     gray = image_service.prepare_ocr_image(final)
@@ -385,6 +399,8 @@ def process_page(project: Project, page_id: str, *, use_ai: bool | None = None, 
             plan, adjustments, source = combined, combined.adjustments, combined.source
         else:
             plan, adjustments, source = measured, measured.adjustments, measured.source
+        if source != "manual":                     # rognage supplémentaire du livre : gardé d'un traitement à l'autre
+            adjustments = adjustments.model_copy(update=record.adjustments.extra_trim)
         record.applied_plan = plan
         record.proposed_plan = combined if (combined is not None and not auto_apply
                                              and combined.adjustments != adjustments) else None
@@ -448,7 +464,8 @@ def auto_enhance(project: Project, page_id: str) -> ScanPageRecord:
     metrics = image_quality_service.measure(load_straightened(project, page))
     plan = image_enhancement.plan_adjustments(metrics, None,
                                               remove_background=load_book_settings(project).remove_background)
-    record = render_final(project, page_id, plan.adjustments, source=plan.source)
+    extra = load_record(project, page).adjustments.extra_trim
+    record = render_final(project, page_id, plan.adjustments.model_copy(update=extra), source=plan.source)
     record.applied_plan = plan
     save_record(project, record)
     return record
@@ -465,7 +482,8 @@ def apply_proposal(project: Project, page_id: str) -> ScanPageRecord:
     if record.proposed_plan is None:
         raise ProcessingError("Aucune proposition en attente pour cette page.")
     plan = record.proposed_plan
-    updated = render_final(project, page_id, plan.adjustments, source=plan.source)
+    updated = render_final(project, page_id, plan.adjustments.model_copy(update=record.adjustments.extra_trim),
+                           source=plan.source)
     updated.applied_plan, updated.proposed_plan = plan, None
     save_record(project, updated)
     return updated
@@ -548,12 +566,14 @@ def validate_page(project: Project, page_id: str, validated: bool = True) -> Sca
 # --------------------------------------------------------------------------- export
 
 
-def export_inputs(project: Project, *, include_unvalidated: bool = True,
-                  center_content: bool = True) -> tuple[list[SearchablePageInput], list[str]]:
+def export_inputs(project: Project, *, include_unvalidated: bool = True, center_content: bool = True,
+                  run_ocr: bool | None = None) -> tuple[list[SearchablePageInput], list[str]]:
     """Pages dans l'ordre du livre ; problèmes bloquants (page non traitée, à vérifier non validée).
 
     center_content : le bloc de contenu des pages à fond supprimé est transmis pour être centré dans le PDF.
     """
+    if run_ocr is None:
+        run_ocr = load_book_settings(project).run_ocr
     inputs: list[SearchablePageInput] = []
     problems: list[str] = []
     for number, page in enumerate(project.pages, start=1):
@@ -561,42 +581,167 @@ def export_inputs(project: Project, *, include_unvalidated: bool = True,
         if record.error or not is_current(page, record):
             problems.append(f"Page {number} : pas encore traitée ou obsolète.")
             continue
+        if record.ocr_skipped and run_ocr:
+            problems.append(f"Page {number} : texte non reconnu (traitée sans OCR) : retraitez le livre.")
+            continue
         if record.review_reasons and not record.validated and not include_unvalidated:
             problems.append(f"Page {number} : à vérifier, non validée.")
             continue
         inputs.append(SearchablePageInput(page_id=page.id, label=f"{number}",
                                           image_path=str(_absolute(project, record.final_file or "")),
-                                          ocr_path=str(_absolute(project, record.ocr_file or "")),
+                                          ocr_path=str(_absolute(project, record.ocr_file)) if record.ocr_file else None,
                                           content_box=record.content_box if center_content else None))
     return inputs, problems
 
 
-def export_book_pdf(project: Project, *, include_unvalidated: bool = True, uniform: bool = True,
-                    center_content: bool | None = None) -> tuple[SearchablePdfReport, SearchablePdfValidation]:
-    """Un PDF pour le livre : toutes les pages, dans l'ordre, sinon rien. Rapport de validation écrit à côté.
+def export_options(project: Project, *, include_unvalidated: bool | None = None, uniform: bool | None = None,
+                   center_content: bool | None = None) -> ScanBookSettings:
+    """Options d'export effectives : réglages du livre, éventuellement remplacés par les arguments."""
+    settings = load_book_settings(project)
+    updates = {key: value for key, value in (("include_unvalidated", include_unvalidated),
+                                               ("center_content", center_content)) if value is not None}
+    if uniform is False:
+        updates["page_format"] = PAGE_FORMAT_IMAGE
+    elif uniform is True and not settings.uniform_pages:
+        updates["page_format"] = PAGE_FORMAT_MEDIAN
+    return settings.model_copy(update=updates)
 
-    uniform=True : pages PDF de même format, chaque page centrée (marge blanche). center_content (défaut :
-    réglage du livre) : sur les pages à fond supprimé, c'est le bloc de texte et d'images qui est centré.
+
+def export_signature(project: Project, settings: ScanBookSettings) -> str:
+    """Empreinte de ce que contiendrait le PDF : ordre des pages, images finales, OCR, validation, options."""
+    digest = hashlib.sha1()
+    digest.update(f"{settings.page_format}|{settings.paper_size_mm}|{settings.orientation}|{settings.margin_mm}|"
+                  f"{settings.include_unvalidated}|{settings.center_content}|{settings.run_ocr}".encode())
+    for page in project.pages:
+        record = load_record(project, page)
+        box = record.content_box.model_dump_json() if record.content_box else ""
+        # La validation ne change le contenu que si les pages non validées sont exclues du PDF.
+        validated = "" if settings.include_unvalidated else record.validated
+        digest.update(f"|{page.id}:{record.final_signature}:{record.ocr_signature}:{validated}:{box}".encode())
+    return digest.hexdigest()[:16]
+
+
+def export_book_pdf(project: Project, *, include_unvalidated: bool | None = None, uniform: bool | None = None,
+                    center_content: bool | None = None,
+                    automatic: bool = False) -> tuple[SearchablePdfReport, SearchablePdfValidation]:
+    """Un PDF pour le livre : toutes les pages, dans l'ordre, sinon rien. Enregistré dans exports/ avec son
+    rapport de validation (<nom>.validation.json) et sa fiche (<nom>.export.json, pour le retrouver à jour).
+
+    Options par défaut : réglages du livre (format uniforme, pages à vérifier incluses, contenu centré).
     """
-    if center_content is None:
-        center_content = load_book_settings(project).center_content
+    settings = export_options(project, include_unvalidated=include_unvalidated, uniform=uniform,
+                              center_content=center_content)
     if not project.pages:
         raise ExportError("Le livre ne contient aucune page.")
-    inputs, problems = export_inputs(project, include_unvalidated=include_unvalidated,
-                                     center_content=center_content and uniform)
+    inputs, problems = export_inputs(project, include_unvalidated=settings.include_unvalidated,
+                                     center_content=settings.center_content and settings.uniform_pages,
+                                     run_ocr=settings.run_ocr)
     if problems:
         shown = " ".join(problems[:5]) + (f" (+{len(problems) - 5} autres)" if len(problems) > 5 else "")
         raise ExportError("Export impossible : toutes les pages doivent être prêtes. " + shown)
+    signature = export_signature(project, settings)
     output = export_service.export_path(project, ".pdf", "numerisation")
-    report = pdf_export.build_searchable_pdf(inputs, output, uniform=uniform)
+    report = pdf_export.build_searchable_pdf(inputs, output, uniform=settings.uniform_pages,
+                                             paper_mm=settings.paper_size_mm, orientation=settings.orientation,
+                                             margin_mm=settings.margin_mm)
     validation = pdf_export.validate_searchable_pdf(output, inputs)
     if report.page_count != len(project.pages):
         validation.issues.append(Issue(code="scan_pdf_page_count", severity=Severity.ERROR,
                                        message="Le PDF n'a pas le nombre de pages du livre."))
         validation.passed = False
-    output.with_suffix(".validation.json").write_text(
-        validation.model_dump_json(indent=1), encoding="utf-8")
+    output.with_suffix(".validation.json").write_text(validation.model_dump_json(indent=1), encoding="utf-8")
+    record = BookPdfExport(pdf_file=_relative(project, output), signature=signature, automatic=automatic,
+                           settings=settings, report=report, validation=validation)
+    _atomic_write_bytes(output.with_suffix(EXPORT_SUFFIX), record.model_dump_json(indent=1).encode("utf-8"))
+    _prune_exports(project)
+    logger.info("PDF de numérisation enregistré : %s (%s)", output.name, "automatique" if automatic else "manuel")
     return report, validation
+
+
+def _export_records(project: Project) -> list[tuple[Path, BookPdfExport]]:
+    """Fiches d'export lisibles dont le PDF existe, de la plus récente à la plus ancienne."""
+    folder = project_service.project_dir(project) / "exports"
+    if not folder.is_dir():
+        return []
+    found = []
+    for path in folder.glob(f"*numerisation*{EXPORT_SUFFIX}"):
+        try:
+            record = BookPdfExport.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            logger.warning("Fiche d'export illisible (%s) : %s", path.name, type(error).__name__)
+            continue
+        if _absolute(project, record.pdf_file).is_file():
+            found.append((path, record))
+    found.sort(key=lambda item: item[1].created_at, reverse=True)
+    return found
+
+
+def latest_book_pdf(project: Project) -> BookPdfExport | None:
+    """Dernier PDF de numérisation enregistré pour ce livre (None s'il n'y en a pas)."""
+    records = _export_records(project)
+    return records[0][1] if records else None
+
+
+def is_export_current(project: Project, export: BookPdfExport, settings: ScanBookSettings | None = None) -> bool:
+    """Vrai si le PDF correspond encore aux pages et aux options actuelles du livre."""
+    return export.signature == export_signature(project, settings or export_options(project))
+
+
+def book_pdf_path(project: Project, export: BookPdfExport) -> Path:
+    return _absolute(project, export.pdf_file)
+
+
+def _prune_exports(project: Project) -> None:
+    """Garde les SCAN_KEEP_EXPORTS derniers PDF de numérisation (recréables à tout moment) ; efface les autres."""
+    for path, record in _export_records(project)[max(1, config.SCAN_KEEP_EXPORTS):]:
+        pdf = _absolute(project, record.pdf_file)
+        for target in (pdf, pdf.with_suffix(".validation.json"), path):
+            target.unlink(missing_ok=True)
+        logger.info("Ancien PDF de numérisation supprimé : %s", pdf.name)
+
+
+def export_problems(project: Project, settings: ScanBookSettings | None = None) -> list[str]:
+    """Pages qui empêchent de créer le PDF avec les options actuelles (liste vide : le PDF peut être créé)."""
+    settings = settings or export_options(project)
+    if not project.pages:
+        return ["Le livre ne contient aucune page."]
+    return export_inputs(project, include_unvalidated=settings.include_unvalidated, run_ocr=settings.run_ocr)[1]
+
+
+def auto_export_if_ready(project: Project) -> BookPdfExport | None:
+    """À la fin d'un traitement : crée et enregistre le PDF si le livre le demande, que toutes ses pages sont
+    prêtes et qu'aucun PDF à jour n'existe déjà. Ne lève pas pour un livre incomplet (renvoie None)."""
+    settings = load_book_settings(project)
+    if not settings.auto_export or export_problems(project, settings):
+        return None
+    latest = latest_book_pdf(project)
+    if latest is not None and is_export_current(project, latest, settings):
+        return latest
+    export_book_pdf(project, automatic=True)
+    return latest_book_pdf(project)
+
+
+def validate_all(project: Project) -> ValidateAllSummary:
+    """Valide d'un coup toutes les pages prêtes (image finale et OCR à jour, sans erreur, pas en cours).
+
+    Les pages « à vérifier » passent en « terminée » ; les pages non prêtes sont listées, pas validées.
+    """
+    sync_queue(project)
+    states = {task.page_id: task.state for task in scan_repository.tasks(project.id)}
+    summary = ValidateAllSummary()
+    for number, page in enumerate(project.pages, start=1):
+        record = load_record(project, page)
+        if states.get(page.id) == ScanState.PROCESSING or record.error or not is_current(page, record):
+            summary.not_ready.append(number)
+            continue
+        if record.validated:
+            summary.already.append(number)
+        else:
+            record.validated = True
+            save_record(project, record)
+            summary.validated.append(number)
+        scan_repository.set_state(project.id, page.id, _final_state(record))
+    return summary
 
 
 # --------------------------------------------------------------------------- vue d'ensemble
@@ -656,8 +801,12 @@ def describe_changes(project: Project, page: Page, record: ScanPageRecord) -> li
     if geometry.dewarp_applied:
         changes.append("Courbure des lignes corrigée")
     adjustments = record.adjustments
-    if adjustments.has_crop:
+    if any((adjustments.crop_left, adjustments.crop_top, adjustments.crop_right, adjustments.crop_bottom)):
         changes.append("Bandes de fond rognées aux bords")
+    if any(adjustments.extra_trim.values()):
+        sides = ", ".join(f"{label} {value * 100:g} %" for label, value in zip(
+            ("gauche", "haut", "droite", "bas"), adjustments.extra_trim.values()) if value)
+        changes.append(f"Rognage supplémentaire : {sides}")
     for field, label in _ADJUSTMENT_LABELS.items():
         if getattr(adjustments, field):
             changes.append(label)
@@ -671,7 +820,9 @@ def describe_changes(project: Project, page: Page, record: ScanPageRecord) -> li
         changes.append("Balance des blancs")
     if record.final_source == "straightened":
         changes.append("Amélioration écartée (dégradation mesurée)")
-    if record.quality is not None and record.quality.ocr_word_count is not None:
+    if record.ocr_skipped:
+        changes.append("Pas d'OCR : PDF sans texte recherchable")
+    elif record.quality is not None and record.quality.ocr_word_count is not None:
         changes.append(f"Texte reconnu : {record.quality.ocr_word_count} mots (couche invisible)")
     return changes
 
@@ -790,3 +941,79 @@ def restore_book(trash_name: str) -> Project:
         if is_current(page, record) or record.error:
             scan_repository.set_state(project.id, page.id, _final_state(record), error=record.error)
     return project
+
+
+# --------------------------------------------------------------------------- modifications de toutes les pages
+
+
+def _target_pages(project: Project, page_ids: list[str] | None) -> list[Page]:
+    wanted = set(page_ids) if page_ids is not None else None
+    return [page for page in project.pages if wanted is None or page.id in wanted]
+
+
+def apply_quad_to_pages(project: Project, corners: list[Point] | None, page_ids: list[str] | None = None) -> list[str]:
+    """Même recadrage (4 coins sur la photo originale) pour plusieurs pages ; None = contour automatique.
+
+    Utile quand l'appareil et le livre restent à la même place (banc de numérisation). Le contour est validé
+    une fois ; chaque page est historisée puis enregistrée. Renvoie les pages modifiées (à retraiter).
+    """
+    if corners is not None:
+        problems = validate_quad(corners)
+        if problems:
+            raise ProcessingError("Recadrage refusé : " + " ".join(problems))
+    changed: list[str] = []
+    with project_service.project_lock(project.id):
+        fresh = project_service.open_project(project.id)
+        for page in _target_pages(fresh, page_ids):
+            quad = list(corners) if corners is not None else None
+            if page.geometry.manual_quad == quad:
+                continue
+            project_service.snapshot_page(fresh, page.id, "Recadrage de toutes les pages")
+            page.geometry.manual_quad = quad
+            changed.append(page.id)
+        if changed:
+            project_service.save_project(fresh)
+    project.pages[:] = fresh.pages
+    return changed
+
+
+def apply_rotation_to_pages(project: Project, quarter_turns: int, page_ids: list[str] | None = None) -> list[str]:
+    """Même rotation manuelle (quarts de tour horaires après l'automatique) pour plusieurs pages."""
+    if isinstance(quarter_turns, bool) or quarter_turns not in (0, 1, 2, 3):
+        raise ProcessingError("La rotation doit être de 0, 90, 180 ou 270°.")
+    changed: list[str] = []
+    with project_service.project_lock(project.id):
+        fresh = project_service.open_project(project.id)
+        for page in _target_pages(fresh, page_ids):
+            if page.geometry.manual_quarter_turns == quarter_turns:
+                continue
+            project_service.snapshot_page(fresh, page.id, "Rotation de toutes les pages")
+            page.geometry.manual_quarter_turns = quarter_turns
+            changed.append(page.id)
+        if changed:
+            project_service.save_project(fresh)
+    project.pages[:] = fresh.pages
+    return changed
+
+
+def apply_trim_to_pages(project: Project, trim: dict[str, float] | None,
+                        page_ids: list[str] | None = None) -> list[str]:
+    """Rognage supplémentaire des bords (fractions left/top/right/bottom) pour plusieurs pages.
+
+    Il s'ajoute au rognage automatique de chaque page (bandes de fond), garde tous les autres réglages et la
+    source des réglages (une page automatique le reste). trim=None : rognage supplémentaire retiré.
+    Renvoie les pages modifiées (à retraiter).
+    """
+    values = trim or {}
+    extra = ScanAdjustments(**{f"extra_{side}": float(values.get(side, 0.0))
+                               for side in ("left", "top", "right", "bottom")}).extra_trim
+    changed: list[str] = []
+    for page in _target_pages(project, page_ids):
+        record = load_record(project, page)
+        updated = record.adjustments.model_copy(update=extra)
+        if updated == record.adjustments:
+            continue
+        record.remember(record.adjustments_source, updated)
+        save_record(project, record)
+        changed.append(page.id)
+    return changed
