@@ -113,6 +113,7 @@ SCAN_JPEG_QUALITY = _int("BOOKOCR_SCAN_JPEG_QUALITY", 92)  # unique encodage ave
 SCAN_BATCH_SIZE = _int("BOOKOCR_SCAN_BATCH_SIZE", 10)      # pages traitées entre deux relectures du projet
 SCAN_MAX_ATTEMPTS = _int("BOOKOCR_SCAN_MAX_ATTEMPTS", 3)   # tentatives par page avant FAILED définitif
 SCAN_KEEP_EXPORTS = _int("BOOKOCR_SCAN_KEEP_EXPORTS", 3)   # PDF de numérisation gardés par livre (recréables)
+SCAN_WORKERS = _int("BOOKOCR_SCAN_WORKERS", 2)            # pages traitées en même temps (≈ 0,7 Go chacune) ; 1 avec Gemma
 GEMINI_ENABLED = _bool("GEMINI_ENABLED", False)
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_TIMEOUT = _int("GEMINI_TIMEOUT", 60)

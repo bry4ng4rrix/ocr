@@ -389,7 +389,12 @@ validate_page(project, page_id, validated: bool = True) -> ScanPageRecord
 export_book_pdf(project, *, require_validation: bool = False) -> tuple[SearchablePdfReport, SearchablePdfValidation]
 book_overview(project) -> list[dict]                      # tableau de l'écran
 scan_runner.start(book_ids, page_ids=None, *, retry_failed=False, use_ai=None) ; cancel() ; is_running() ; status()
-    # un seul worker de numérisation par processus ; livres traités l'un après l'autre
+scan_runner.run_book(book_id, page_ids=None, *, retry_failed=False, use_ai=None, cancel_event=None, workers=None)
+scan_runner.worker_count(use_ai, requested=None) -> int     # config.SCAN_WORKERS (≥ 1) ; 1 avec Gemma
+scan_runner.is_page_busy(page_id) -> bool                   # RunnerStatus.current_pages
+    # un seul worker de numérisation par processus ; livres traités l'un après l'autre ; dans un livre,
+    # `workers` pages à la fois dans des fils du même processus (verrou project_lock valable dans un processus,
+    # donc pas de processus séparés) ; seconds_per_page = durée écoulée / pages faites (débit réel)
 ```
 
 Écran : `components/screens/smart_scan.py` (« Numérisation intelligente », groupe Traitement ; voir §12). Déroulé :

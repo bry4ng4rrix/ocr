@@ -100,7 +100,16 @@ En PDF, avec la politique `shrink`, la police est réduite par pas de 3 % jusqu'
   - PDF construit avec PyMuPDF, mot par mot (pas d'OCRmyPDF : absent, et il refait l'OCR et réencode) ;
   - image finale en JPEG unique, insérée telle quelle ;
   - file d'états dans SQLite (`scan_tasks`) et détails par page en JSON ;
-  - un seul worker de numérisation par processus.
+  - un seul worker de numérisation par processus ; depuis le 23/10/2026 il traite plusieurs pages à la fois (D-17).
 - **Conséquences** :
   - le module fonctionne entièrement sans IA ;
   - l'analyse Gemma est trop lente sur ce poste pour 8 400 pages : à réserver aux pages douteuses, ou à exécuter sur un serveur avec GPU.
+
+## D-17 — Pages traitées en parallèle dans le worker de numérisation — RETENUE
+
+- **Constat** (23/10/2026, 5 photos réelles de 5 568 × 3 712 px, `fra+deu`, sans IA, 4 cœurs) : 19,9 s par page en traitement séquentiel. Tesseract est déjà limité à un fil (`OMP_THREAD_LIMIT=1`), donc un seul cœur sert la plupart du temps. Profil d'une page : contrôle 180° par double lecture 7,9 s, OCR final 6,4 s, OSD 2,1 s, encodage PNG 2,1 s, mesures et nettoyage du fond ≈ 4 s.
+- **Options** : (a) processus séparés ; (b) fils dans le processus Streamlit.
+- **Décision** : (b). L'enregistrement de `project.json` relit et réécrit le projet sous `project_lock`, un `threading.RLock` : des processus séparés perdraient des mises à jour. Les étapes lourdes libèrent le GIL (sous-processus Tesseract, OpenCV, encodeurs Pillow).
+- **Mesures** : 1 page à la fois 19,9 s/page (689 Mo) ; 2 : 13,5 s/page (783 Mo) ; 3 : 11,4 s/page (1 084 Mo). Images finales et OCR identiques octet pour octet.
+- **Conséquences** : `BOOKOCR_SCAN_WORKERS=2` par défaut (environ 2 Go libres sur ce poste) ; une seule page à la fois avec Gemma (Ollama sert une requête à la fois) ; l'ordre de fin des pages n'est plus strictement celui du livre.
+

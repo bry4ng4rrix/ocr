@@ -1,7 +1,10 @@
 """Traitement de numérisation en arrière-plan : file SQLite, reprise, annulation, un livre après l'autre.
 
-Un seul worker de numérisation à la fois dans le processus (mémoire et Ollama limités) ; les pages sont
-traitées une par une (aucune image de livre gardée en mémoire entre deux pages). Après une interruption
+Un seul worker de numérisation à la fois dans le processus ; il traite `config.SCAN_WORKERS` pages en même
+temps dans des fils (Tesseract tourne dans un sous-processus, OpenCV et Pillow libèrent le GIL), une seule
+avec Gemma (Ollama traite une requête à la fois). Les fils restent dans ce processus : l'enregistrement de
+project.json est protégé par `project_service.project_lock`, qui ne vaut que dans un processus. Aucune image
+de livre n'est gardée en mémoire entre deux pages. Après une interruption
 (arrêt de Streamlit, plantage), les pages restées PROCESSING repassent PENDING et sont reprises ;
 les pages COMPLETED ne sont pas refaites. Les pages FAILED ne sont relancées que sur demande.
 """
@@ -10,7 +13,8 @@ from __future__ import annotations
 import gc
 import logging
 import threading
-import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
@@ -19,7 +23,7 @@ import config
 from models.errors import BookOcrError, JobAlreadyRunningError
 from models.scanning import ScanState
 from repositories import scan_repository
-from services import project_service, scanning_service
+from services import image_analysis_service, project_service, scanning_service
 
 logger = logging.getLogger("bookocr.scan_runner")
 
@@ -28,11 +32,12 @@ class RunnerStatus(BaseModel):
     running: bool = False
     book_ids: list[str] = Field(default_factory=list)
     current_book: str | None = None
-    current_page: str | None = None
+    current_pages: list[str] = Field(default_factory=list)     # pages en cours de traitement
+    workers: int = 1                            # pages traitées en même temps
     processed: int = 0
     failed: int = 0
     started_at: datetime | None = None
-    seconds_per_page: float | None = None       # moyenne mesurée sur ce lancement
+    seconds_per_page: float | None = None       # débit mesuré sur ce lancement (durée écoulée / pages faites)
     last_export: str | None = None              # dernier PDF créé automatiquement (relatif au projet)
     export_message: str = ""                    # résultat de la création automatique du PDF
     message: str = ""
@@ -82,30 +87,64 @@ def select_pages(book_id: str, page_ids: list[str] | None, retry_failed: bool) -
     return selected
 
 
+def worker_count(use_ai: bool | None, requested: int | None = None) -> int:
+    """Pages traitées en même temps : le réglage (au moins 1), mais une seule quand Gemma analyse les pages."""
+    ai = image_analysis_service.analysis_enabled() if use_ai is None else use_ai
+    return 1 if ai else max(1, requested if requested is not None else config.SCAN_WORKERS)
+
+
+def _process_one(project, page_id: str, use_ai: bool | None) -> bool:
+    """Traite une page dans un fil du pool ; vrai si la page est en échec."""
+    _page_started(page_id)
+    try:
+        record = scanning_service.process_page(project, page_id, use_ai=use_ai)
+        return record.error is not None
+    finally:
+        _page_finished(page_id)
+        gc.collect()
+
+
 def run_book(book_id: str, page_ids: list[str] | None = None, *, retry_failed: bool = False,
-             use_ai: bool | None = None, cancel_event: threading.Event | None = None) -> tuple[int, int]:
-    """Traite un livre dans le fil courant ; renvoie (pages traitées, pages en échec)."""
+             use_ai: bool | None = None, cancel_event: threading.Event | None = None,
+             workers: int | None = None) -> tuple[int, int]:
+    """Traite un livre (plusieurs pages à la fois) ; renvoie (pages traitées, pages en échec).
+
+    Les pages partent dans l'ordre du livre ; il n'y en a jamais plus de `workers` en cours, si bien qu'une
+    annulation ne laisse finir que les pages déjà commencées.
+    """
     project = project_service.open_project(book_id)
     scanning_service.sync_queue(project)
     scan_repository.recover_interrupted(book_id)
     todo = select_pages(book_id, page_ids, retry_failed)
+    count = worker_count(use_ai, workers)
+    _update(current_book=book_id, workers=count)
     processed = failed = 0
-    for position, page_id in enumerate(todo):
-        if cancel_event is not None and cancel_event.is_set():
-            break
-        if position % max(1, config.SCAN_BATCH_SIZE) == 0 and position:
-            project = project_service.open_project(book_id)    # ordre et réglages faits entre-temps dans l'interface
-        try:
-            project.page(page_id)
-        except BookOcrError:
-            continue                                           # page supprimée entre-temps
-        _update(current_book=book_id, current_page=page_id)
-        started = time.monotonic()
-        record = scanning_service.process_page(project, page_id, use_ai=use_ai)
-        processed += 1
-        failed += int(record.error is not None)
-        _record_timing(time.monotonic() - started, failed=record.error is not None)
-        gc.collect()
+
+    def collect(done: set[Future]) -> None:
+        nonlocal processed, failed
+        for future in done:
+            page_failed = future.result()          # une erreur imprévue remonte comme avant (fil du worker)
+            processed += 1
+            failed += int(page_failed)
+            _record_page(failed=page_failed)
+
+    with ThreadPoolExecutor(max_workers=count, thread_name_prefix="scan_page") as pool:
+        pending: set[Future] = set()
+        for position, page_id in enumerate(todo):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if position % max(1, config.SCAN_BATCH_SIZE) == 0 and position:
+                project = project_service.open_project(book_id)    # ordre et réglages faits entre-temps
+            try:
+                project.page(page_id)
+            except BookOcrError:
+                continue                                           # page supprimée entre-temps
+            while len(pending) >= count:
+                done, pending = wait_futures(pending, return_when=FIRST_COMPLETED)
+                collect(done)
+            pending.add(pool.submit(_process_one, project, page_id, use_ai))
+        done, _ = wait_futures(pending)
+        collect(done)
     if not (cancel_event is not None and cancel_event.is_set()):
         _auto_export(book_id)
     return processed, failed
@@ -114,7 +153,7 @@ def run_book(book_id: str, page_ids: list[str] | None = None, *, retry_failed: b
 def _auto_export(book_id: str) -> None:
     """Fin de traitement : PDF créé et enregistré si le livre le demande et que toutes ses pages sont prêtes."""
     try:
-        _update(current_page=None, export_message="Création automatique du PDF…")
+        _update(current_pages=[], export_message="Création automatique du PDF…")
         export = scanning_service.auto_export_if_ready(project_service.open_project(book_id))
         _update(last_export=export.pdf_file if export else None,
                 export_message=f"PDF enregistré : {export.pdf_file.rsplit('/', 1)[-1]}" if export else "")
@@ -129,13 +168,29 @@ def _update(**values) -> None:
             setattr(_status, key, value)
 
 
-def _record_timing(seconds: float, failed: bool) -> None:
+def _page_started(page_id: str) -> None:
+    with _lock:
+        _status.current_pages = [*_status.current_pages, page_id]
+
+
+def _page_finished(page_id: str) -> None:
+    with _lock:
+        _status.current_pages = [current for current in _status.current_pages if current != page_id]
+
+
+def _record_page(failed: bool) -> None:
+    """Une page de plus ; débit = durée écoulée depuis le lancement / pages faites (pages simultanées comprises)."""
     with _lock:
         _status.processed += 1
         _status.failed += int(failed)
-        previous = _status.seconds_per_page
-        count = _status.processed
-        _status.seconds_per_page = round(seconds if previous is None else previous + (seconds - previous) / count, 1)
+        if _status.started_at is not None:
+            elapsed = (datetime.now(timezone.utc) - _status.started_at).total_seconds()
+            _status.seconds_per_page = round(elapsed / _status.processed, 1)
+
+
+def is_page_busy(page_id: str) -> bool:
+    """Vrai si cette page est en cours de traitement en arrière-plan."""
+    return is_running() and page_id in status().current_pages
 
 
 def start(book_ids: list[str], page_ids: list[str] | None = None, *, retry_failed: bool = False,
@@ -168,7 +223,7 @@ def start(book_ids: list[str], page_ids: list[str] | None = None, *, retry_faile
                 logger.exception("Erreur imprévue du worker de numérisation")
                 _update(message=f"Erreur inattendue : {error}")
             finally:
-                _update(current_page=None, current_book=None)
+                _update(current_pages=[], current_book=None)
 
         _thread = threading.Thread(target=work, name="scan_runner", daemon=True)
         _thread.start()

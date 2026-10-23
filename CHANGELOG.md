@@ -4,6 +4,11 @@ Format inspiré de *Keep a Changelog*. Dates au format AAAA-MM-JJ.
 
 ## [Non publié]
 
+### Modifié — 2026-10-23 (traitement plus rapide)
+- La numérisation traite plusieurs pages à la fois (`BOOKOCR_SCAN_WORKERS`, 2 par défaut ; une seule avec Gemma). Mesuré sur 5 photos réelles : 19,9 → 13,5 s par page avec 2 pages à la fois, 11,4 s avec 3 ; résultats identiques (D-17).
+- Le débit affiché (« s/page mesurées ») est la durée écoulée divisée par le nombre de pages faites ; le nombre de pages simultanées est affiché.
+- La fenêtre de retouche reconnaît chacune des pages en cours de traitement (`scan_runner.is_page_busy`).
+
 ### Modifié — 2026-10-23 (boutons regroupés par objectif)
 - Numérisation intelligente (navigation latérale et six étapes inchangées) :
   - étape 1 : les options de traitement (OCR, fond, Gemma) sont réunies ; « Centrer le contenu » rejoint la mise en page du PDF (étape 5) ;

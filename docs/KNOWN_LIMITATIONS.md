@@ -59,7 +59,7 @@ Propriétaire : `integration-documentation`. Une limite est **constatée** (preu
 
 | Limite | Effet | Contournement |
 |---|---|---|
-| Ollama tourne sur le CPU de ce poste (GPU 1050 Ti non utilisé, `size_vram: 0`) | Analyse Gemma de 113 à 117 s par page avec la consigne de production (mesuré sur 2 pages) : environ 270 h pour 8 400 pages | traitement sans IA par défaut (16,7 s/page mesurées) ; Gemma page par page sur les pages à vérifier ; serveur Ollama avec GPU |
+| Ollama tourne sur le CPU de ce poste (GPU 1050 Ti non utilisé, `size_vram: 0`) | Analyse Gemma de 113 à 117 s par page avec la consigne de production (mesuré sur 2 pages) : environ 270 h pour 8 400 pages | traitement sans IA par défaut (16,7 à 19,9 s/page mesurées une page à la fois ; 13,5 s/page avec 2 pages à la fois, 11,4 s/page avec 3, D-17) ; Gemma page par page sur les pages à vérifier ; serveur Ollama avec GPU |
 | gemma3:4b peu fiable sur ces pages (page à l'envers vue « none », `ROTATE` incohérent, `manual_review_required` contradictoire) | Une décision fondée sur Gemma seul serait fausse | Gemma propose, les mesures décident (D-16) ; un conflit d'orientation demande une confirmation, jamais une rotation |
 | Rapport largeur/hauteur après perspective = rapport **apparent** (arêtes maximales du quadrilatère, `orientation_service.warp_quad`) | Sous forte perspective, la page peut être un peu étirée (synthétique très déformé : 0,63 obtenu pour 0,70 réel) | photographier perpendiculairement (banc) ; estimation de focale à étudier |
 | Contour de feuille légèrement trop large sur le banc (bande noire d'environ 0,3 % sur un ou deux bords) | Liseré noir dans le PDF | rogné automatiquement par bord après mesure (`dark_edges`) ; bande ≥ 8 % : vérification |

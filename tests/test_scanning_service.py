@@ -110,12 +110,60 @@ def test_resume_after_interruption_skips_completed_pages(data_dir, tmp_path, mon
         return scanning_service.load_record(project, project.page(page_id))
 
     monkeypatch.setattr(scanning_service, "process_page", fake_process)
-    processed, failed = scan_runner.run_book(project.id)
+    processed, failed = scan_runner.run_book(project.id, workers=1)        # une page à la fois : ordre du livre
     assert calls == ids[1:] and (processed, failed) == (2, 0)
     assert scan_repository.progress(project.id).counts == {ScanState.COMPLETED: 3}
     calls.clear()
     scan_runner.run_book(project.id)                    # tout est fait : rien n'est refait
     assert calls == []
+
+
+def test_runner_never_exceeds_the_number_of_simultaneous_pages(data_dir, tmp_path, monkeypatch):
+    import threading
+    import time
+
+    pages = [synthetic.on_dark_background(synthetic.text_page(), seed=seed) for seed in range(5)]
+    for number, page in enumerate(pages):
+        page.name = f"p{number}"
+    project, _ = _project(data_dir, tmp_path, pages)
+    active, peak, guard = [0], [0], threading.Lock()
+
+    def fake_process(project, page_id, **kwargs):
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        assert page_id in scan_runner.status().current_pages
+        time.sleep(0.2)
+        with guard:
+            active[0] -= 1
+        scan_repository.set_state(project.id, page_id, ScanState.COMPLETED)
+        return scanning_service.load_record(project, project.page(page_id))
+
+    monkeypatch.setattr(scanning_service, "process_page", fake_process)
+    assert scan_runner.run_book(project.id, use_ai=False, workers=2) == (5, 0)
+    assert peak[0] == 2 and scan_runner.status().current_pages == []
+    assert scan_runner.worker_count(True, 4) == 1                          # Gemma : une page à la fois
+
+
+def test_parallel_processing_gives_the_same_pages_without_lost_updates(data_dir, tmp_path):
+    import hashlib
+
+    def run(folder: str, workers: int) -> dict[str, tuple]:
+        pages = [synthetic.on_dark_background(make(), seed=seed) for seed, make in
+                 enumerate((synthetic.text_page, synthetic.german_text_page, synthetic.two_column_page))]
+        project, _ = _project(data_dir, tmp_path / folder, pages)
+        assert scan_runner.run_book(project.id, use_ai=False, workers=workers) == (3, 0)
+        reopened = project_service.open_project(project.id)                # project.json relu sur disque
+        result = {}
+        for page in reopened.pages:
+            assert page.geometry.detection_done, "géométrie perdue à l'enregistrement simultané"
+            record = scanning_service.load_record(reopened, page)
+            final = (project_service.project_dir(reopened) / record.final_file).read_bytes()
+            result[page.original_name] = (hashlib.sha256(final).hexdigest(), page.geometry.signature(),
+                                          len(scanning_service.load_ocr(reopened, record).words))
+        return result
+
+    assert run("parallel", 3) == run("sequential", 1)
 
 
 def test_repeatedly_interrupted_page_fails_and_can_be_retried(data_dir, tmp_path, monkeypatch):

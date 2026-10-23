@@ -36,7 +36,7 @@ Copier [`.env.example`](.env.example) en `.env` au besoin (lu au démarrage). Pr
 Écran **Traitement › Numérisation intelligente** : un PDF par livre. Chaque page montre la photographie redressée, recadrée et corrigée avec prudence, en couleurs, avec une couche OCR **invisible** et recherchable alignée mot par mot. Les boutons d'un même objectif sont regroupés à chaque étape.
 
 1. **Livre et photos** : choisir un livre ou en créer un (langues OCR, par exemple `fra` et `deu`), ajouter toutes ses photos (téléversement ou dossier local), régler les options de traitement (OCR, suppression du fond, Gemma), puis « Importer et traiter le livre ».
-2. **Traitement** : avancement en arrière-plan, une page à la fois, avec reprise après une interruption ; « Relancer les pages en erreur » et « Arrêter le traitement » côte à côte.
+2. **Traitement** : avancement en arrière-plan, plusieurs pages à la fois (`BOOKOCR_SCAN_WORKERS`, 2 par défaut ; une seule avec Gemma), avec reprise après une interruption ; « Relancer les pages en erreur » et « Arrêter le traitement » côte à côte.
 3. **Résultats** : galerie avant/après ou tableau, filtre par état, « Valider toutes les pages ».
 4. **Retouche** : « Retoucher cette page » (fenêtre à outils : Aperçu, Recadrage, Réglages, Orientation et type, Analyse Gemma ; chaque outil porte ses propres boutons) ou « Modifier toutes les pages… » (recadrage commun, rognage, rotation).
 5. **PDF du livre** : mise en page (format, orientation, marge, centrage) et options d'export, puis « Créer le PDF » ; le téléchargement s'affiche dès qu'il est prêt. Le PDF et son rapport (`.validation.json`) sont écrits dans `data/projects/<id>/exports/`.

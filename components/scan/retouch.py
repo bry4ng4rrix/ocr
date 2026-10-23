@@ -266,7 +266,7 @@ def retouch_dialog(project: Project, page_id: str) -> None:
     record = scanning_service.load_record(project, page)
     paths = project_service.page_paths(project, page)
     final_path = project_service.project_dir(project) / record.final_file if record.final_file else None
-    busy = scan_runner.is_running() and scan_runner.status().current_page == page.id
+    busy = scan_runner.is_page_busy(page.id)
     task = scan_repository.get_task(project.id, page.id)
     state = task.state if task else ScanState.PENDING
     has_straightened = paths.corrected.is_file()

@@ -132,7 +132,8 @@ def runner_caption() -> None:
     runner = scan_runner.status()
     if runner.running:
         speed = f" — {runner.seconds_per_page:.0f} s/page mesurées" if runner.seconds_per_page else ""
-        st.caption(f"Traitement en arrière-plan : {runner.processed} page(s) faite(s){speed}.")
+        together = f", {runner.workers} pages à la fois" if runner.workers > 1 else ""
+        st.caption(f"Traitement en arrière-plan : {runner.processed} page(s) faite(s){speed}{together}.")
     elif runner.message and runner.started_at:
         extra = f" · {runner.export_message}" if runner.export_message else ""
         st.caption(f"Dernier traitement : {runner.message} ({runner.processed} page(s), {runner.failed} en "
